@@ -1,0 +1,23 @@
+<configuration scan="true" scanPeriod="30 seconds">
+  <property name="APP_NAME" value="fishy-zio-http-socket"/>
+  <timestamp key="BY_DATE" datePattern="yyyy-MM-dd"/>
+
+  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} %-5level [%thread] %logger - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <!-- Netty internal logger categories -->
+  <logger name="io.netty" level="INFO"/>
+  <logger name="zio.http" level="INFO"/>
+  <logger name="dev.zio" level="INFO"/>
+
+  <!-- Reduce noise from generic libs (adjust as needed) -->
+  <logger name="org.jboss" level="WARN"/>
+  <logger name="org.eclipse.jetty" level="WARN"/>
+
+  <root level="INFO">
+    <appender-ref ref="STDOUT"/>
+  </root>
+</configuration>
