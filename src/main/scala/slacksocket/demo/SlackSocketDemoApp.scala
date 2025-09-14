@@ -2,7 +2,7 @@ package slacksocket.demo
 
 import slacksocket.demo.conf.AppConfig
 import slacksocket.demo.service.{SocketService, SlackApiClient, SocketManager, MessageProcessor}
-import slacksocket.demo.domain.{SocketId, InboundQueue}
+import slacksocket.demo.domain.socket.{SocketId, InboundQueue}
 import slacksocket.demo.domain.slack.{
   BusinessMessage,
   EventsApiMessage,

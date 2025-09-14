@@ -1,4 +1,4 @@
-package slacksocket.demo.domain
+package slacksocket.demo.domain.socket
 
 import zio.json.*
 import zio.Queue

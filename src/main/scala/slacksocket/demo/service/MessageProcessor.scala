@@ -1,7 +1,7 @@
 package slacksocket.demo.service
 
 import zio.*
-import slacksocket.demo.domain.InboundQueue
+import slacksocket.demo.domain.socket.InboundQueue
 import slacksocket.demo.domain.slack.{
   BusinessMessage,
   EventsApiMessage,

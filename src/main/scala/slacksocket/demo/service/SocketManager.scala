@@ -4,7 +4,7 @@ import zio.*
 import zio.http.*
 import zio.json.*
 import slacksocket.demo.conf.AppConfig
-import slacksocket.demo.domain.{SocketId, SocketConnectionState, InboundQueue}
+import slacksocket.demo.domain.socket.{SocketId, SocketConnectionState, InboundQueue}
 import slacksocket.demo.domain.slack.BusinessMessage
 import java.util.concurrent.TimeUnit
 
