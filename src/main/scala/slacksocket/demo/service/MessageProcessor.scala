@@ -32,8 +32,53 @@ object MessageProcessorService:
 
   object Live:
 
-    case class Live(messageStore: MessageStore, eventBus: MessageEventBus)
+    // Phase 7b: Simplified to only depend on MessageStore (Option 2 pattern)
+    // MessageStore now handles event publishing
+    case class Live(messageStore: MessageStore, botIdentityService: BotIdentityService)
         extends MessageProcessorService {
+
+      /** Helper to handle thread reply storage for any channel type. The channel_type
+        * (channel/im/group/mpim) is Slack transport detail - our domain model doesn't care about it
+        * since storage logic is identical.
+        */
+      private def handleThreadReply(
+          message: Message,
+          channelType: String,
+          envelopeId: String
+      ): UIO[Unit] =
+        message.thread_ts match {
+          case Some(threadTsDouble) =>
+            val threadId = ThreadId(threadTsDouble)
+            // Check if we have this thread stored
+            messageStore
+              .retrieveThread(threadId)
+              .flatMap { thread =>
+                // We have the thread! Create and store the message
+                val botIdentity = thread.botIdentity
+                val threadMessage =
+                  ThreadMessage.fromSlackMessage(message, threadId, botIdentity)
+
+                messageStore
+                  .store(threadMessage)
+                  .flatMap { msgId =>
+                    ZIO.logInfo(
+                      s"💾 THREAD_REPLY_STORED: thread=${threadId.formatted} message=${msgId.formatted} author=${threadMessage.author.value} channel_type=$channelType"
+                    )
+                    // Phase 7b: MessageStore now publishes MessageStored event (Option 2)
+                  }
+                  .tapError(error => ZIO.logError(s"❌ FAILED_TO_STORE_REPLY: ${error.getMessage}"))
+                  .catchAll(_ => ZIO.unit) // Continue even if storage fails
+              }
+              .catchAll { error =>
+                // Thread not found - this is expected for non-bot threads
+                ZIO.logDebug(
+                  s"🔍 THREAD_NOT_TRACKED: thread=${threadId.formatted} (not a bot thread)"
+                )
+              }
+          case None =>
+            // Not a thread reply, just a regular message
+            ZIO.unit
+        }
 
       override def processMessage(message: BusinessMessage): UIO[BusinessMessage] =
         message match {
@@ -58,308 +103,75 @@ object MessageProcessorService:
 
                 // Use domain model to determine if we should act on this mention
                 val channelId = ChannelId(appMention.channel)
-                val botIdentity = BotIdentity(UserId("BOT123"), "demo-bot") // TODO: Get from config
 
-                Thread.fromAppMention(appMention, channelId, botIdentity) match {
-                  case Some(thread) =>
-                    ZIO.logInfo(
-                      s"🆕 NEW_THREAD_CREATED: id=${thread.id.formatted} channel=${channelId.value}"
-                    ) *>
-                      // Store the thread in MessageStore
-                      messageStore
-                        .storeThread(thread)
-                        .tapError(error =>
-                          ZIO.logError(s"❌ FAILED_TO_STORE_THREAD: ${error.getMessage}")
-                        )
-                        .catchAll(_ => ZIO.unit) // Log error but don't fail message processing
-                      *>
-                      ZIO.logInfo(
-                        s"💾 THREAD_STORED: id=${thread.id.formatted} messages=${thread.messages.size}"
-                      ) *>
-                      // Publish ThreadCreated event
-                      eventBus.publish(
-                        MessageEventBus.MessageEvent.ThreadCreated(thread, Instant.now())
-                      ) *>
-                      ZIO.logInfo(s"📢 EVENT_PUBLISHED: ThreadCreated(${thread.id.formatted})") *>
-                      // Verify storage by retrieving what we just stored
-                      messageStore
-                        .retrieveThread(thread.id)
-                        .flatMap { retrievedThread =>
+                // Get bot identity from service
+                // Note: BotIdentityService fails fast at startup if it can't fetch identity,
+                // so we know this will always succeed here (identity is cached)
+                botIdentityService.getBotIdentity.orDie // Convert Error to defect - should never fail after startup
+                  .flatMap { botIdentity =>
+                    Thread.fromAppMention(appMention, channelId, botIdentity) match {
+                      case Some(thread) =>
+                        ZIO.logInfo(
+                          s"🆕 NEW_THREAD_CREATED: id=${thread.id.formatted} channel=${channelId.value}"
+                        ) *>
+                          // Store the thread in MessageStore
+                          messageStore
+                            .storeThread(thread)
+                            .tapError(error =>
+                              ZIO.logError(s"❌ FAILED_TO_STORE_THREAD: ${error.getMessage}")
+                            )
+                            .catchAll(_ => ZIO.unit) // Log error but don't fail message processing
+                          *>
                           ZIO.logInfo(
-                            s"✅ STORAGE_VERIFIED: Retrieved thread ${retrievedThread.id.formatted} with ${retrievedThread.messages.size} messages"
-                          )
-                        }
-                        .tapError(error =>
-                          ZIO.logError(s"⚠️ STORAGE_VERIFICATION_FAILED: ${error.getMessage}")
-                        )
-                        .catchAll(_ => ZIO.unit) *>
-                      ZIO.succeed(event)
+                            s"💾 THREAD_STORED: id=${thread.id.formatted} messages=${thread.messages.size}"
+                          ) *>
+                          // Phase 7b: MessageStore now publishes ThreadCreated event (Option 2)
+                          // Verify storage by retrieving what we just stored
+                          messageStore
+                            .retrieveThread(thread.id)
+                            .flatMap { retrievedThread =>
+                              ZIO.logInfo(
+                                s"✅ STORAGE_VERIFIED: Retrieved thread ${retrievedThread.id.formatted} with ${retrievedThread.messages.size} messages"
+                              )
+                            }
+                            .tapError(error =>
+                              ZIO.logError(s"⚠️ STORAGE_VERIFICATION_FAILED: ${error.getMessage}")
+                            )
+                            .catchAll(_ => ZIO.unit) *>
+                          ZIO.succeed(event)
 
-                  case None =>
-                    ZIO.logInfo(s"❌ THREAD_MENTION_DISCARDED: mention in existing thread") *>
-                      // This mention was in an existing thread - we ignore it per bot behavior
-                      ZIO.succeed(event)
-                }
+                      case None =>
+                        ZIO.logInfo(s"❌ THREAD_MENTION_DISCARDED: mention in existing thread") *>
+                          // This mention was in an existing thread - we ignore it per bot behavior
+                          ZIO.succeed(event)
+                    }
+                  }
               }
 
           case message: Message =>
-            // 🔍 DIAGNOSTIC: Log all message fields to understand bot message structure
+            // Phase 7c: No filtering in MessageProcessor - processors filter via canProcess()
+            // Store ALL messages (including bot's own) for complete conversation history
+
+            // Log the message with appropriate icon based on channel type and thread status
+            val isReply = message.thread_ts.isDefined
+            val logIcon = message.channel_type match {
+              case "im"    => if (isReply) "🧵 DM_THREAD_REPLY" else "📩 DIRECT_MESSAGE"
+              case "group" => if (isReply) "🧵 GROUP_THREAD_REPLY" else "👥 GROUP_MESSAGE"
+              case "mpim"  => if (isReply) "🧵 MPIM_THREAD_REPLY" else "👥 MULTI_PERSON_IM"
+              case _       => if (isReply) "🧵 THREAD_REPLY" else "� CHANNEL_MESSAGE"
+            }
+
             ZIO.logInfo(
-              s"""📋 MESSAGE_DIAGNOSTIC:
-                 |  user: ${message.user}
-                 |  channel: ${message.channel}
-                 |  channel_type: ${message.channel_type}
-                 |  text: ${message.text}
-                 |  ts: ${message.ts}
-                 |  event_ts: ${message.event_ts}
-                 |  subtype: ${message.subtype}
-                 |  thread_ts: ${message.thread_ts}
-                 |  parent_user_id: ${message.parent_user_id}""".stripMargin
+              s"$logIcon: envelope=${event.envelope_id} user=${message.user
+                  .getOrElse("unknown")} channel=${message.channel}"
             ) *>
-              // FILTER: Ignore bot messages to prevent infinite loops
-              (message.subtype match {
-                case Some("bot_message") =>
-                  ZIO.logDebug(
-                    s"🤖 BOT_MESSAGE_IGNORED: channel=${message.channel} (preventing loop)"
-                  ) *>
-                    ZIO.succeed(event)
-
-                case _ =>
-                  // Pattern match on channel_type to determine message context
-                  message.channel_type match {
-                    case "channel" =>
-                      val isReply = message.thread_ts.isDefined
-                      val logPrefix = if (isReply) "🧵 THREAD_REPLY" else "💬 CHANNEL_MESSAGE"
-                      ZIO.logInfo(
-                        s"$logPrefix: envelope=${event.envelope_id} user=${message.user
-                            .getOrElse("unknown")} channel=${message.channel}"
-                      ) *>
-                        message.text.fold(ZIO.unit)(text =>
-                          ZIO.logInfo(s"💬 MESSAGE_TEXT: $text")
-                        ) *>
-                        message.thread_ts.fold(ZIO.unit)(threadTs =>
-                          ZIO.logInfo(s"🧵 THREAD_TS: $threadTs")
-                        ) *>
-                        // MVP: Store thread replies if we have the thread stored
-                        (message.thread_ts match {
-                          case Some(threadTsDouble) =>
-                            val threadId = ThreadId(threadTsDouble)
-                            // Check if we have this thread stored
-                            messageStore
-                              .retrieveThread(threadId)
-                              .flatMap { thread =>
-                                // We have the thread! Create and store the message
-                                val botIdentity = thread.botIdentity
-                                val threadMessage =
-                                  ThreadMessage.fromSlackMessage(message, threadId, botIdentity)
-
-                                messageStore
-                                  .store(threadMessage)
-                                  .flatMap { msgId =>
-                                    ZIO.logInfo(
-                                      s"💾 THREAD_REPLY_STORED: thread=${threadId.formatted} message=${msgId.formatted} author=${threadMessage.author.value}"
-                                    ) *>
-                                      // Publish MessageStored event
-                                      eventBus.publish(
-                                        MessageEventBus.MessageEvent.MessageStored(
-                                          threadMessage,
-                                          Instant.now()
-                                        )
-                                      ) *>
-                                      ZIO.logInfo(
-                                        s"📢 EVENT_PUBLISHED: MessageStored(${msgId.formatted})"
-                                      )
-                                  }
-                                  .tapError(error =>
-                                    ZIO.logError(s"❌ FAILED_TO_STORE_REPLY: ${error.getMessage}")
-                                  )
-                                  .catchAll(_ => ZIO.unit) // Continue even if storage fails
-                              }
-                              .catchAll { error =>
-                                // Thread not found - this is expected for non-bot threads
-                                ZIO.logDebug(
-                                  s"🔍 THREAD_NOT_TRACKED: thread=${threadId.formatted} (not a bot thread)"
-                                )
-                              }
-                          case None =>
-                            // Not a thread reply, just a regular channel message
-                            ZIO.unit
-                        }) *>
-                        ZIO.succeed(event)
-
-                    case "im" =>
-                      val isReply = message.thread_ts.isDefined
-                      val logPrefix = if (isReply) "🧵 DM_THREAD_REPLY" else "📩 DIRECT_MESSAGE"
-                      ZIO.logInfo(
-                        s"$logPrefix: envelope=${event.envelope_id} user=${message.user
-                            .getOrElse("unknown")} channel=${message.channel}"
-                      ) *>
-                        message.text.fold(ZIO.unit)(text => ZIO.logInfo(s"📩 DM_TEXT: $text")) *>
-                        message.thread_ts.fold(ZIO.unit)(threadTs =>
-                          ZIO.logInfo(s"🧵 THREAD_TS: $threadTs")
-                        ) *>
-                        // MVP: Store thread replies if we have the thread stored
-                        (message.thread_ts match {
-                          case Some(threadTsDouble) =>
-                            val threadId = ThreadId(threadTsDouble)
-                            messageStore
-                              .retrieveThread(threadId)
-                              .flatMap { thread =>
-                                val botIdentity = thread.botIdentity
-                                val threadMessage =
-                                  ThreadMessage.fromSlackMessage(message, threadId, botIdentity)
-
-                                messageStore
-                                  .store(threadMessage)
-                                  .flatMap { msgId =>
-                                    ZIO.logInfo(
-                                      s"💾 THREAD_REPLY_STORED: thread=${threadId.formatted} message=${msgId.formatted} author=${threadMessage.author.value}"
-                                    ) *>
-                                      // Publish MessageStored event
-                                      eventBus.publish(
-                                        MessageEventBus.MessageEvent.MessageStored(
-                                          threadMessage,
-                                          Instant.now()
-                                        )
-                                      ) *>
-                                      ZIO.logInfo(
-                                        s"📢 EVENT_PUBLISHED: MessageStored(${msgId.formatted})"
-                                      )
-                                  }
-                                  .tapError(error =>
-                                    ZIO.logError(s"❌ FAILED_TO_STORE_REPLY: ${error.getMessage}")
-                                  )
-                                  .catchAll(_ => ZIO.unit)
-                              }
-                              .catchAll { error =>
-                                ZIO.logDebug(
-                                  s"🔍 THREAD_NOT_TRACKED: thread=${threadId.formatted} (not a bot thread)"
-                                )
-                              }
-                          case None =>
-                            ZIO.unit
-                        }) *>
-                        ZIO.succeed(event)
-
-                    case "group" =>
-                      val isReply = message.thread_ts.isDefined
-                      val logPrefix = if (isReply) "🧵 GROUP_THREAD_REPLY" else "👥 GROUP_MESSAGE"
-                      ZIO.logInfo(
-                        s"$logPrefix: envelope=${event.envelope_id} user=${message.user
-                            .getOrElse("unknown")} channel=${message.channel}"
-                      ) *>
-                        message.text.fold(ZIO.unit)(text => ZIO.logInfo(s"👥 GROUP_TEXT: $text")) *>
-                        message.thread_ts.fold(ZIO.unit)(threadTs =>
-                          ZIO.logInfo(s"🧵 THREAD_TS: $threadTs")
-                        ) *>
-                        // MVP: Store thread replies if we have the thread stored
-                        (message.thread_ts match {
-                          case Some(threadTsDouble) =>
-                            val threadId = ThreadId(threadTsDouble)
-                            messageStore
-                              .retrieveThread(threadId)
-                              .flatMap { thread =>
-                                val botIdentity = thread.botIdentity
-                                val threadMessage =
-                                  ThreadMessage.fromSlackMessage(message, threadId, botIdentity)
-
-                                messageStore
-                                  .store(threadMessage)
-                                  .flatMap { msgId =>
-                                    ZIO.logInfo(
-                                      s"💾 THREAD_REPLY_STORED: thread=${threadId.formatted} message=${msgId.formatted} author=${threadMessage.author.value}"
-                                    ) *>
-                                      // Publish MessageStored event
-                                      eventBus.publish(
-                                        MessageEventBus.MessageEvent.MessageStored(
-                                          threadMessage,
-                                          Instant.now()
-                                        )
-                                      ) *>
-                                      ZIO.logInfo(
-                                        s"📢 EVENT_PUBLISHED: MessageStored(${msgId.formatted})"
-                                      )
-                                  }
-                                  .tapError(error =>
-                                    ZIO.logError(s"❌ FAILED_TO_STORE_REPLY: ${error.getMessage}")
-                                  )
-                                  .catchAll(_ => ZIO.unit)
-                              }
-                              .catchAll { error =>
-                                ZIO.logDebug(
-                                  s"🔍 THREAD_NOT_TRACKED: thread=${threadId.formatted} (not a bot thread)"
-                                )
-                              }
-                          case None =>
-                            ZIO.unit
-                        }) *>
-                        ZIO.succeed(event)
-
-                    case "mpim" =>
-                      val isReply = message.thread_ts.isDefined
-                      val logPrefix = if (isReply) "🧵 MPIM_THREAD_REPLY" else "👥 MULTI_PERSON_IM"
-                      ZIO.logInfo(
-                        s"$logPrefix: envelope=${event.envelope_id} user=${message.user
-                            .getOrElse("unknown")} channel=${message.channel}"
-                      ) *>
-                        message.text.fold(ZIO.unit)(text => ZIO.logInfo(s"👥 MPIM_TEXT: $text")) *>
-                        message.thread_ts.fold(ZIO.unit)(threadTs =>
-                          ZIO.logInfo(s"🧵 THREAD_TS: $threadTs")
-                        ) *>
-                        // MVP: Store thread replies if we have the thread stored (same logic as channel)
-                        (message.thread_ts match {
-                          case Some(threadTsDouble) =>
-                            val threadId = ThreadId(threadTsDouble)
-                            // Check if we have this thread stored
-                            messageStore
-                              .retrieveThread(threadId)
-                              .flatMap { thread =>
-                                // We have the thread! Create and store the message
-                                val botIdentity = thread.botIdentity
-                                val threadMessage =
-                                  ThreadMessage.fromSlackMessage(message, threadId, botIdentity)
-
-                                messageStore
-                                  .store(threadMessage)
-                                  .flatMap { msgId =>
-                                    ZIO.logInfo(
-                                      s"💾 THREAD_REPLY_STORED: thread=${threadId.formatted} message=${msgId.formatted} author=${threadMessage.author.value}"
-                                    ) // *>
-                                    // Publish MessageStored event
-                                    // eventBus.publish(
-                                    //   MessageEventBus.MessageEvent.MessageStored(
-                                    //     threadMessage,
-                                    //     Instant.now()
-                                    //   )
-                                    // ) *>
-                                    // ZIO.logInfo(
-                                    //   s"📢 EVENT_PUBLISHED: MessageStored(${msgId.formatted})"
-                                    // )
-                                  }
-                                  .tapError(error =>
-                                    ZIO.logError(s"❌ FAILED_TO_STORE_REPLY: ${error.getMessage}")
-                                  )
-                                  .catchAll(_ => ZIO.unit) // Continue even if storage fails
-                              }
-                              .catchAll { error =>
-                                // Thread not found - this is expected for non-bot threads
-                                ZIO.logDebug(
-                                  s"🔍 THREAD_NOT_TRACKED: thread=${threadId.formatted} (not a bot thread)"
-                                )
-                              }
-                          case None =>
-                            // Not a thread reply, just a regular MPIM message
-                            ZIO.unit
-                        }) *>
-                        ZIO.succeed(event)
-
-                    case otherType =>
-                      ZIO.logInfo(
-                        s"❓ UNKNOWN_MESSAGE_TYPE: envelope=${event.envelope_id} channel_type=$otherType"
-                      ) *>
-                        ZIO.succeed(event)
-                  }
-              })
+              message.text.fold(ZIO.unit)(text => ZIO.logInfo(s"� MESSAGE_TEXT: $text")) *>
+              message.thread_ts.fold(ZIO.unit)(threadTs =>
+                ZIO.logInfo(s"🧵 THREAD_TS: $threadTs")
+              ) *>
+              // Handle thread reply storage (identical logic for all channel types)
+              handleThreadReply(message, message.channel_type, event.envelope_id) *>
+              ZIO.succeed(event)
 
           case reactionAdded: ReactionAdded =>
             ZIO.logInfo(
@@ -430,12 +242,14 @@ object MessageProcessorService:
 
     }
 
-    val layer: ZLayer[MessageStore & MessageEventBus, Nothing, MessageProcessorService] =
+    // Phase 7b: Simplified layer to only depend on MessageStore (Option 2 pattern)
+    // Phase 8: Added BotIdentityService dependency for real bot user ID
+    val layer: ZLayer[MessageStore & BotIdentityService, Nothing, MessageProcessorService] =
       ZLayer.fromZIO {
         for {
           store <- ZIO.service[MessageStore]
-          bus <- ZIO.service[MessageEventBus]
-        } yield Live(store, bus)
+          botIdentity <- ZIO.service[BotIdentityService]
+        } yield Live(store, botIdentity)
       }
 
   object Stub:

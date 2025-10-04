@@ -160,8 +160,10 @@ object ThreadMessage:
       MessageSource.Self
     } else {
       slackMessage.subtype match {
-        case Some("bot_message") => MessageSource.SlackBot
-        case _                   => MessageSource.SlackUser
+        case Some("bot_message") =>
+          MessageSource.SlackBot
+        case _ =>
+          MessageSource.SlackUser
       }
     }
 

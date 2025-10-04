@@ -28,10 +28,31 @@ trait SlackApiClient {
       text: String,
       threadTs: Option[ThreadId]
   ): IO[SlackApiClient.Error, String]
+
+  /** Get bot's own identity from Slack.
+    *
+    * Uses auth.test endpoint to retrieve bot user ID, username, etc.
+    *
+    * @return
+    *   AuthTestResponse with bot identity information
+    */
+  def authTest: IO[SlackApiClient.Error, SlackApiClient.AuthTestResponse]
 }
 
 object SlackApiClient {
   final case class Connection(url: String)
+
+  /** Response from auth.test endpoint - bot's own identity */
+  final case class AuthTestResponse(
+      ok: Boolean,
+      url: String,
+      team: String,
+      user: String, // Bot username
+      team_id: String,
+      user_id: String, // Bot user ID - THIS IS WHAT WE NEED!
+      bot_id: Option[String],
+      error: Option[String]
+  )
 
   sealed trait Error extends Throwable
 
@@ -57,6 +78,8 @@ object SlackApiClient {
 
   private final case class OpenResponse(ok: Boolean, url: Option[String], error: Option[String])
   private given JsonDecoder[OpenResponse] = DeriveJsonDecoder.gen[OpenResponse]
+
+  given JsonDecoder[AuthTestResponse] = DeriveJsonDecoder.gen[AuthTestResponse]
 
   private final case class PostMessageRequest(
       channel: String,
@@ -141,6 +164,30 @@ object SlackApiClient {
           case e: Error     => e
           case t: Throwable => DecodeError(s"Request failed: ${t.getMessage}", t.toString)
         }
+
+      override def authTest: IO[Error, AuthTestResponse] =
+        (for {
+          _ <- ZIO.logInfo("🔍 Calling auth.test to get bot identity")
+          req = Request(
+            method = Method.POST,
+            url = URL.decode("https://slack.com/api/auth.test").toOption.get,
+            headers = Headers(
+              "Authorization" -> s"Bearer $botToken",
+              "Content-Type" -> "application/x-www-form-urlencoded"
+            )
+          )
+          resp <- client.request(req)
+          body <- resp.body.asString
+          _ <- ZIO.fail(HttpError(resp.status, body)).when(!resp.status.isSuccess)
+          parsed <- ZIO.fromEither(
+            body.fromJson[AuthTestResponse].left.map(msg => DecodeError(msg, body))
+          )
+          _ <- ZIO.fail(ApiError(parsed.error.getOrElse("unknown"))).when(!parsed.ok)
+          _ <- ZIO.logInfo(s"✅ auth.test success: user_id=${parsed.user_id} user=${parsed.user}")
+        } yield parsed).provideLayer(ZLayer.succeed(Scope.global)).mapError {
+          case e: Error     => e
+          case t: Throwable => DecodeError(s"Request failed: ${t.getMessage}", t.toString)
+        }
     }
 
     val layer: ZLayer[Client, Throwable, SlackApiClient] =
@@ -171,6 +218,21 @@ object SlackApiClient {
             s"🌐 STUB: postMessage to ${channelId.value}${threadTs.map(t => s" thread ${t.formatted}").getOrElse("")}: $text"
           ) *>
             ZIO.succeed("1234567890.123456")
+
+        override def authTest: IO[SlackApiClient.Error, SlackApiClient.AuthTestResponse] =
+          ZIO.logInfo("🌐 STUB: authTest called") *>
+            ZIO.succeed(
+              SlackApiClient.AuthTestResponse(
+                ok = true,
+                url = "https://stub.slack.com",
+                team = "Stub Team",
+                user = "stub-bot",
+                team_id = "T123",
+                user_id = "U123STUBBOT",
+                bot_id = Some("B123"),
+                error = None
+              )
+            )
       }
     }
   }

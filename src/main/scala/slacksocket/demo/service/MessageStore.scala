@@ -108,16 +108,22 @@ object MessageStore:
 
   /** In-memory implementation using Ref for fiber-safe state management. Follows Chapter 9: Ref -
     * Shared State.
+    *
+    * Phase 7a: Now publishes domain events on successful storage operations (Option 2 pattern).
+    * Events are published atomically with storage to ensure they reflect actual state changes.
     */
   case class InMemory(
       messages: Ref[Map[MessageId, ThreadMessage]],
-      threads: Ref[Map[ThreadId, Thread]]
+      threads: Ref[Map[ThreadId, Thread]],
+      eventBus: MessageEventBus // ← NEW: Dependency for publishing domain events
   ) extends MessageStore:
 
     def store(message: ThreadMessage): IO[Error, MessageId] =
       for {
         _ <- messages.update(_ + (message.id -> message))
         _ <- ZIO.logDebug(s"Stored message: ${message.id.formatted}")
+        // Phase 7a: Publish MessageStored event (Option 2 pattern)
+        _ <- eventBus.publish(MessageEventBus.MessageStored(message, Instant.now))
       } yield message.id
 
     def storeThread(thread: Thread): IO[Error, ThreadId] =
@@ -129,17 +135,34 @@ object MessageStore:
         _ <- ZIO.logInfo(
           s"Stored thread: ${thread.id.formatted} with ${thread.messages.size} messages"
         )
+        // Phase 7a: Publish ThreadCreated event (Option 2 pattern)
+        _ <- eventBus.publish(MessageEventBus.ThreadCreated(thread, Instant.now))
       } yield thread.id
 
     def retrieve(messageId: MessageId): IO[Error, Option[ThreadMessage]] =
       messages.get.map(_.get(messageId))
 
     def retrieveThread(threadId: ThreadId): IO[Error, Thread] =
-      threads.get.flatMap { map =>
-        ZIO
-          .fromOption(map.get(threadId))
+      for {
+        threadsMap <- threads.get
+        messagesMap <- messages.get
+
+        // Get the base thread
+        baseThread <- ZIO
+          .fromOption(threadsMap.get(threadId))
           .orElseFail(Error.NotFound(s"Thread(${threadId.value})"))
-      }
+
+        // Get all messages for this thread (excluding root message which is already in thread)
+        threadMessages = messagesMap.values
+          .filter(msg => msg.threadId == threadId && msg.id != baseThread.rootMessage.id)
+          .toList
+          .sortBy(_.createdAt) // Sort by creation time
+
+        // Rebuild thread with all messages
+        fullThread = threadMessages.foldLeft(baseThread) { (thread, msg) =>
+          thread.addMessage(msg)
+        }
+      } yield fullThread
 
     def retrieveByTimeRange(
         start: Instant,
@@ -215,14 +238,18 @@ object MessageStore:
 
   object InMemory:
 
-    /** ZLayer for InMemory implementation. Follows Chapter 17: Dependency Injection. */
-    val layer: ZLayer[Any, Nothing, MessageStore] =
+    /** ZLayer for InMemory implementation. Follows Chapter 17: Dependency Injection.
+      *
+      * Phase 7a: Now depends on MessageEventBus for publishing domain events (Option 2 pattern).
+      */
+    val layer: ZLayer[MessageEventBus, Nothing, MessageStore] =
       ZLayer.fromZIO {
         for {
           messages <- Ref.make(Map.empty[MessageId, ThreadMessage])
           threads <- Ref.make(Map.empty[ThreadId, Thread])
-          _ <- ZIO.logInfo("MessageStore.InMemory initialized")
-        } yield InMemory(messages, threads)
+          eventBus <- ZIO.service[MessageEventBus] // ← NEW: Get MessageEventBus dependency
+          _ <- ZIO.logInfo("MessageStore.InMemory initialized (with event publishing)")
+        } yield InMemory(messages, threads, eventBus)
       }
 
   // Accessor methods following Chapter 19: Contextual Data Types

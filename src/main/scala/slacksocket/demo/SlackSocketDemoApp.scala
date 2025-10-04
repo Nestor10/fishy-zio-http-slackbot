@@ -4,6 +4,7 @@ import slacksocket.demo.conf.AppConfig
 import slacksocket.demo.service.{
   SocketService,
   SlackApiClient,
+  BotIdentityService,
   SocketManager,
   MessageProcessorService,
   MessageStore,
@@ -125,10 +126,11 @@ object SlackSocketDemoApp extends ZIOAppDefault {
             ZLayer.succeed(cfg), // Configuration (already validated)
             SocketService.Live.layer,
             SlackApiClient.Live.layer,
+            BotIdentityService.Live.layer, // Phase 8: Bot identity service (depends on SlackApiClient)
             SocketManager.Live.layer,
-            MessageStore.InMemory.layer, // Phase 1: In-memory storage
-            MessageEventBus.Live.layer, // Phase 2: Event broadcasting
-            MessageProcessorService.Live.layer,
+            MessageEventBus.Live.layer, // Phase 2: Event broadcasting (no dependencies)
+            MessageStore.InMemory.layer, // Phase 1/7a: In-memory storage (depends on MessageEventBus)
+            MessageProcessorService.Live.layer, // Phase 4/7b/8: Orchestrator (depends on MessageStore + BotIdentityService)
             ProcessorRegistry.Live.layer, // Phase 3: Processor registry
             LLMService.configured, // Phase 6: LLM service (dynamic: Ollama or OpenAI based on config)
             AiBotProcessor.layer, // Phase 3/6b: AI bot with LLM integration

@@ -26,19 +26,32 @@ class AiBotProcessor(
   override val name: String = "AiBotProcessor"
 
   override def canProcess(event: MessageEvent): Boolean = event match
-    case _: MessageEvent.ThreadCreated => true // Acknowledge new threads immediately
-    case _: MessageEvent.MessageStored => true // Generate AI responses
-    case _                             => false
+    case MessageEvent.ThreadCreated(_, _)       => true // Always acknowledge new threads
+    case MessageEvent.MessageStored(message, _) =>
+      // Phase 7c: Filter bot messages to prevent infinite loop (Option 2 pattern)
+      // Only process user messages - don't respond to our own messages
+      message.source != slacksocket.demo.domain.conversation.MessageSource.Self
+    case _ => false
 
   override def process(event: MessageEvent): IO[MessageProcessor.Error, Unit] =
     event match
       case MessageEvent.ThreadCreated(thread, timestamp) =>
-        acknowledgeThread(thread).catchAll { error =>
-          ZIO.logError(s"🤖 AI_BOT: Failed to acknowledge thread: ${error.getMessage}") *>
+        // When a new thread is created from @mention, we need to:
+        // 1. Post quick acknowledgment
+        // 2. Generate and post AI response to the initial message
+        // Note: generateAndPostResponse retrieves full thread history from MessageStore,
+        // including the acknowledgment we just posted
+        (for {
+          _ <- acknowledgeThread(thread)
+          // Pass root message - generateAndPostResponse will fetch full thread history
+          _ <- generateAndPostResponse(thread.rootMessage)
+        } yield ()).catchAll { error =>
+          ZIO.logError(s"🤖 AI_BOT: Failed to process new thread: ${error.getMessage}") *>
             ZIO.unit // Don't crash processor on errors
         }
 
       case MessageEvent.MessageStored(message, timestamp) =>
+        // User replied in thread - generate AI response with full conversation context
         generateAndPostResponse(message).catchAll { error =>
           ZIO.logError(s"🤖 AI_BOT: Failed to generate response: ${error.getMessage}") *>
             ZIO.unit // Don't crash processor on errors
@@ -91,6 +104,19 @@ class AiBotProcessor(
       _ <- ZIO.logInfo(
         s"🤖 AI_BOT: Generating response for thread ${message.threadId.formatted} (${threadMessages.size} messages in context)"
       )
+
+      // DIAGNOSTIC: Log the full request being sent to LLM
+      _ <- ZIO.logInfo(
+        s"🤖 AI_BOT_DIAGNOSTIC: LLM Request - model=${config.llm.model} temp=${config.llm.temperature} maxTokens=${config.llm.maxTokens}"
+      )
+      _ <- ZIO.logInfo(
+        s"🤖 AI_BOT_DIAGNOSTIC: System prompt: ${config.llm.systemPrompt}"
+      )
+      _ <- ZIO.foreach(threadMessages.zipWithIndex) { case (msg, idx) =>
+        ZIO.logInfo(
+          s"🤖 AI_BOT_DIAGNOSTIC: Message[$idx] role=${msg.role} content=${msg.content.take(100)}"
+        )
+      }
 
       // Call LLM
       response <- llmService
