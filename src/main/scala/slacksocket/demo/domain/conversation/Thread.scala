@@ -5,12 +5,20 @@ import java.time.Instant
 import slacksocket.demo.domain.slack.AppMention
 
 // Core identifiers
-case class ThreadId(value: Double) extends AnyVal
+case class ThreadId(value: Double) extends AnyVal {
+
+  /** Format as Slack timestamp string (e.g., "1759466226.275309") */
+  def formatted: String = f"$value%.6f"
+}
 
 object ThreadId:
   given JsonCodec[ThreadId] = JsonCodec.double.transform(ThreadId.apply, _.value)
 
-case class MessageId(value: Double) extends AnyVal
+case class MessageId(value: Double) extends AnyVal {
+
+  /** Format as Slack timestamp string (e.g., "1759466226.275309") */
+  def formatted: String = f"$value%.6f"
+}
 
 object MessageId:
   given JsonCodec[MessageId] = JsonCodec.double.transform(MessageId.apply, _.value)
@@ -130,6 +138,45 @@ case class ThreadMessage(
     )
   }
 }
+
+object ThreadMessage:
+
+  /** Factory method to create a ThreadMessage from a Slack Message event.
+    *
+    * Use this for thread replies - assumes the thread already exists. For thread creation from
+    * AppMention, use Thread.fromAppMention instead.
+    */
+  def fromSlackMessage(
+      slackMessage: slacksocket.demo.domain.slack.Message,
+      threadId: ThreadId,
+      botIdentity: BotIdentity
+  ): ThreadMessage = {
+    val messageId = MessageId(slackMessage.ts)
+    val authorId = UserId(slackMessage.user.getOrElse("unknown"))
+    val content = slackMessage.text.getOrElse("")
+    val now = Instant.now() // Domain object creation time
+
+    val source = if (authorId == botIdentity.userId) {
+      MessageSource.Self
+    } else {
+      slackMessage.subtype match {
+        case Some("bot_message") => MessageSource.SlackBot
+        case _                   => MessageSource.SlackUser
+      }
+    }
+
+    ThreadMessage(
+      id = messageId,
+      threadId = threadId,
+      source = source,
+      author = authorId,
+      content = content,
+      createdAt = now, // When we created this domain object
+      updatedAt = now, // Initially same as created
+      slackCreatedAt = Some(Thread.slackTimestampToInstant(slackMessage.ts)),
+      slackEventId = Some(slackMessage.event_ts)
+    )
+  }
 
 // Track message edits
 case class MessageEdit(
@@ -258,7 +305,7 @@ case class Thread(
 object Thread:
 
   // Utility to convert Slack timestamp (Double) to Instant
-  private def slackTimestampToInstant(slackTs: Double): Instant = {
+  def slackTimestampToInstant(slackTs: Double): Instant = {
     val seconds = slackTs.toLong
     val nanos = ((slackTs - seconds) * 1_000_000_000L).toLong
     Instant.ofEpochSecond(seconds, nanos)
