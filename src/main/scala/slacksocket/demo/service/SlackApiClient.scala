@@ -4,7 +4,7 @@ import zio._
 import zio.http._
 import zio.json._
 import slacksocket.demo.conf.AppConfig
-import slacksocket.demo.domain.conversation.{ChannelId, ThreadId}
+import slacksocket.demo.domain.conversation.{ChannelId, ThreadId, MessageId}
 
 /** Slack API client with just enough to open a Socket Mode connection via apps.connections.open */
 trait SlackApiClient {
@@ -37,6 +37,36 @@ trait SlackApiClient {
     *   AuthTestResponse with bot identity information
     */
   def authTest: IO[SlackApiClient.Error, SlackApiClient.AuthTestResponse]
+
+  /** Add a reaction emoji to a message.
+    *
+    * @param channel
+    *   Channel containing the message
+    * @param timestamp
+    *   Message timestamp
+    * @param name
+    *   Emoji name (without colons, e.g., "robot_face")
+    */
+  def addReaction(
+      channel: ChannelId,
+      timestamp: MessageId,
+      name: String
+  ): IO[SlackApiClient.Error, Unit]
+
+  /** Remove a reaction emoji from a message.
+    *
+    * @param channel
+    *   Channel containing the message
+    * @param timestamp
+    *   Message timestamp
+    * @param name
+    *   Emoji name (without colons, e.g., "robot_face")
+    */
+  def removeReaction(
+      channel: ChannelId,
+      timestamp: MessageId,
+      name: String
+  ): IO[SlackApiClient.Error, Unit]
 }
 
 object SlackApiClient {
@@ -94,6 +124,19 @@ object SlackApiClient {
       error: Option[String]
   )
   private given JsonDecoder[PostMessageResponse] = DeriveJsonDecoder.gen[PostMessageResponse]
+
+  private final case class ReactionRequest(
+      channel: String,
+      timestamp: String,
+      name: String
+  )
+  private given JsonEncoder[ReactionRequest] = DeriveJsonEncoder.gen[ReactionRequest]
+
+  private final case class ReactionResponse(
+      ok: Boolean,
+      error: Option[String]
+  )
+  private given JsonDecoder[ReactionResponse] = DeriveJsonDecoder.gen[ReactionResponse]
 
   object Live {
 
@@ -188,6 +231,76 @@ object SlackApiClient {
           case e: Error     => e
           case t: Throwable => DecodeError(s"Request failed: ${t.getMessage}", t.toString)
         }
+
+      override def addReaction(
+          channel: ChannelId,
+          timestamp: MessageId,
+          name: String
+      ): IO[Error, Unit] = {
+        val reqBody = ReactionRequest(
+          channel = channel.value,
+          timestamp = timestamp.formatted,
+          name = name
+        )
+        val bodyJson = reqBody.toJson
+        val req = Request(
+          method = Method.POST,
+          url = URL.decode("https://slack.com/api/reactions.add").toOption.get,
+          headers = Headers(
+            "Authorization" -> s"Bearer $botToken",
+            "Content-Type" -> "application/json; charset=utf-8"
+          ),
+          body = Body.fromString(bodyJson)
+        )
+
+        (for {
+          resp <- client.request(req)
+          body <- resp.body.asString
+          _ <- ZIO.fail(HttpError(resp.status, body)).when(!resp.status.isSuccess)
+          parsed <- ZIO.fromEither(
+            body.fromJson[ReactionResponse].left.map(msg => DecodeError(msg, body))
+          )
+          _ <- ZIO.fail(ApiError(parsed.error.getOrElse("unknown"))).when(!parsed.ok)
+        } yield ()).provideLayer(ZLayer.succeed(Scope.global)).mapError {
+          case e: Error     => e
+          case t: Throwable => DecodeError(s"Request failed: ${t.getMessage}", t.toString)
+        }
+      }
+
+      override def removeReaction(
+          channel: ChannelId,
+          timestamp: MessageId,
+          name: String
+      ): IO[Error, Unit] = {
+        val reqBody = ReactionRequest(
+          channel = channel.value,
+          timestamp = timestamp.formatted,
+          name = name
+        )
+        val bodyJson = reqBody.toJson
+        val req = Request(
+          method = Method.POST,
+          url = URL.decode("https://slack.com/api/reactions.remove").toOption.get,
+          headers = Headers(
+            "Authorization" -> s"Bearer $botToken",
+            "Content-Type" -> "application/json; charset=utf-8"
+          ),
+          body = Body.fromString(bodyJson)
+        )
+
+        (for {
+          resp <- client.request(req)
+          body <- resp.body.asString
+          _ <- ZIO.fail(HttpError(resp.status, body)).when(!resp.status.isSuccess)
+          parsed <- ZIO.fromEither(
+            body.fromJson[ReactionResponse].left.map(msg => DecodeError(msg, body))
+          )
+          _ <- ZIO.fail(ApiError(parsed.error.getOrElse("unknown"))).when(!parsed.ok)
+        } yield ()).provideLayer(ZLayer.succeed(Scope.global)).mapError {
+          case e: Error     => e
+          case t: Throwable => DecodeError(s"Request failed: ${t.getMessage}", t.toString)
+        }
+      }
     }
 
     val layer: ZLayer[Client, Throwable, SlackApiClient] =
@@ -233,6 +346,24 @@ object SlackApiClient {
                 error = None
               )
             )
+
+        override def addReaction(
+            channel: ChannelId,
+            timestamp: MessageId,
+            name: String
+        ): IO[SlackApiClient.Error, Unit] =
+          ZIO.logInfo(
+            s"🌐 STUB: addReaction :$name: to message ${timestamp.formatted} in ${channel.value}"
+          )
+
+        override def removeReaction(
+            channel: ChannelId,
+            timestamp: MessageId,
+            name: String
+        ): IO[SlackApiClient.Error, Unit] =
+          ZIO.logInfo(
+            s"🌐 STUB: removeReaction :$name: from message ${timestamp.formatted} in ${channel.value}"
+          )
       }
     }
   }
