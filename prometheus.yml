@@ -1,0 +1,24 @@
+# Prometheus configuration
+# Scrapes metrics from OTel Collector's Prometheus exporter
+
+global:
+  scrape_interval: 15s      # Scrape targets every 15 seconds
+  evaluation_interval: 15s  # Evaluate rules every 15 seconds
+  external_labels:
+    cluster: 'local-dev'
+    environment: 'development'
+
+scrape_configs:
+  # OTel Collector's Prometheus exporter
+  - job_name: 'otel-collector'
+    static_configs:
+      - targets: ['otel-collector:8889']
+        labels:
+          service: 'slack-bot'
+
+  # OTel Collector's own metrics
+  - job_name: 'otel-collector-internal'
+    static_configs:
+      - targets: ['otel-collector:8888']
+        labels:
+          service: 'otel-collector'

@@ -158,9 +158,9 @@ object SocketManager:
 
       private def startSocket(socketId: SocketId): UIO[Unit] =
         (for {
-          wsResponse <- slackApiClient.requestSocketUrl.mapError(e =>
-            new RuntimeException(e.getMessage, e)
-          )
+          wsResponse <- ZIO.scoped {
+            slackApiClient.requestSocketUrl.mapError(e => new RuntimeException(e.getMessage, e))
+          }
           baseUrl = wsResponse.url
           finalUrl =
             if (cfg.debugReconnects) {

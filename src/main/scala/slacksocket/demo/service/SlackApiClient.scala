@@ -3,6 +3,7 @@ package slacksocket.demo.service
 import zio._
 import zio.http._
 import zio.json._
+import zio.telemetry.opentelemetry.tracing.Tracing
 import slacksocket.demo.conf.AppConfig
 import slacksocket.demo.domain.conversation.{ChannelId, ThreadId, MessageId}
 
@@ -10,7 +11,7 @@ import slacksocket.demo.domain.conversation.{ChannelId, ThreadId, MessageId}
 trait SlackApiClient {
 
   /** Request a fresh WebSocket URL for Slack Socket Mode (does NOT open the websocket). */
-  def requestSocketUrl: IO[SlackApiClient.Error, SlackApiClient.Connection]
+  def requestSocketUrl: ZIO[Scope, SlackApiClient.Error, SlackApiClient.Connection]
 
   /** Post a message to a Slack channel/thread.
     *
@@ -27,7 +28,7 @@ trait SlackApiClient {
       channelId: ChannelId,
       text: String,
       threadTs: Option[ThreadId]
-  ): IO[SlackApiClient.Error, String]
+  ): ZIO[Scope, SlackApiClient.Error, String]
 
   /** Get bot's own identity from Slack.
     *
@@ -36,7 +37,7 @@ trait SlackApiClient {
     * @return
     *   AuthTestResponse with bot identity information
     */
-  def authTest: IO[SlackApiClient.Error, SlackApiClient.AuthTestResponse]
+  def authTest: ZIO[Scope, SlackApiClient.Error, SlackApiClient.AuthTestResponse]
 
   /** Add a reaction emoji to a message.
     *
@@ -51,7 +52,7 @@ trait SlackApiClient {
       channel: ChannelId,
       timestamp: MessageId,
       name: String
-  ): IO[SlackApiClient.Error, Unit]
+  ): ZIO[Scope, SlackApiClient.Error, Unit]
 
   /** Remove a reaction emoji from a message.
     *
@@ -66,7 +67,7 @@ trait SlackApiClient {
       channel: ChannelId,
       timestamp: MessageId,
       name: String
-  ): IO[SlackApiClient.Error, Unit]
+  ): ZIO[Scope, SlackApiClient.Error, Unit]
 
   /** Fetch all messages in a thread (for crash recovery).
     *
@@ -83,7 +84,7 @@ trait SlackApiClient {
   def getConversationReplies(
       channel: ChannelId,
       threadTs: ThreadId
-  ): IO[SlackApiClient.Error, SlackApiClient.ConversationRepliesResponse]
+  ): ZIO[Scope, SlackApiClient.Error, SlackApiClient.ConversationRepliesResponse]
 }
 
 object SlackApiClient {
@@ -179,11 +180,16 @@ object SlackApiClient {
 
   object Live {
 
-    final case class Service(client: Client, appToken: String, botToken: String)
+    final case class Service(client: Client, appToken: String, botToken: String, tracing: Tracing)
         extends SlackApiClient {
 
-      override def requestSocketUrl: IO[Error, Connection] =
-        (for {
+      override def requestSocketUrl: ZIO[Scope, Error, Connection] =
+        ((for {
+          startTime <- Clock.currentTime(java.util.concurrent.TimeUnit.MILLISECONDS)
+
+          _ <- tracing.setAttribute("slack.api", "apps.connections.open")
+          _ <- tracing.addEvent("slack_api_request_start")
+
           tok <- ZIO.succeed(appToken)
           _ <- ZIO.logInfo("Requesting WebSocket URL from Slack API")
           req = Request(
@@ -202,7 +208,15 @@ object SlackApiClient {
           )
           _ <- ZIO.fail(ApiError(parsed.error.getOrElse("unknown"))).when(!parsed.ok)
           url <- ZIO.fromOption(parsed.url).orElseFail(DecodeError("Missing url field", body))
-        } yield Connection(url)).provideLayer(ZLayer.succeed(Scope.global)).mapError {
+
+          endTime <- Clock.currentTime(java.util.concurrent.TimeUnit.MILLISECONDS)
+          latency = endTime - startTime
+
+          _ <- tracing.setAttribute("slack.api.latency_ms", latency.toString)
+          _ <- tracing.setAttribute("slack.websocket.url", url)
+          _ <- tracing.addEvent("slack_api_response_received")
+
+        } yield Connection(url)) @@ tracing.aspects.span("slack.api.connections_open")).mapError {
           case e: Error => e
           case t        => DecodeError(t.getMessage, t.toString)
         }
@@ -211,8 +225,17 @@ object SlackApiClient {
           channelId: ChannelId,
           text: String,
           threadTs: Option[ThreadId]
-      ): IO[Error, String] =
-        (for {
+      ): ZIO[Scope, Error, String] =
+        ((for {
+          startTime <- Clock.currentTime(java.util.concurrent.TimeUnit.MILLISECONDS)
+
+          _ <- tracing.setAttribute("slack.api", "chat.postMessage")
+          _ <- tracing.setAttribute("slack.channel", channelId.value)
+          _ <- ZIO.whenCase(threadTs) { case Some(ts) =>
+            tracing.setAttribute("slack.thread_ts", ts.formatted)
+          }
+          _ <- tracing.addEvent("slack_api_request_start")
+
           _ <- ZIO.logInfo(
             s"Posting message to channel ${channelId.value}${threadTs.map(t => s" thread ${t.formatted}").getOrElse("")}"
           )
@@ -241,14 +264,27 @@ object SlackApiClient {
           ts <- ZIO
             .fromOption(parsed.ts)
             .orElseFail(DecodeError("Missing ts field in response", body))
+
+          endTime <- Clock.currentTime(java.util.concurrent.TimeUnit.MILLISECONDS)
+          latency = endTime - startTime
+
+          _ <- tracing.setAttribute("slack.api.latency_ms", latency.toString)
+          _ <- tracing.setAttribute("slack.message_ts", ts)
+          _ <- tracing.addEvent("slack_api_response_received")
+
           _ <- ZIO.logInfo(s"✅ Posted message with ts=$ts")
-        } yield ts).provideLayer(ZLayer.succeed(Scope.global)).mapError {
+        } yield ts) @@ tracing.aspects.span("slack.api.post_message")).mapError {
           case e: Error     => e
           case t: Throwable => DecodeError(s"Request failed: ${t.getMessage}", t.toString)
         }
 
-      override def authTest: IO[Error, AuthTestResponse] =
-        (for {
+      override def authTest: ZIO[Scope, Error, AuthTestResponse] =
+        ((for {
+          startTime <- Clock.currentTime(java.util.concurrent.TimeUnit.MILLISECONDS)
+
+          _ <- tracing.setAttribute("slack.api", "auth.test")
+          _ <- tracing.addEvent("slack_api_request_start")
+
           _ <- ZIO.logInfo("🔍 Calling auth.test to get bot identity")
           req = Request(
             method = Method.POST,
@@ -265,8 +301,17 @@ object SlackApiClient {
             body.fromJson[AuthTestResponse].left.map(msg => DecodeError(msg, body))
           )
           _ <- ZIO.fail(ApiError(parsed.error.getOrElse("unknown"))).when(!parsed.ok)
+
+          endTime <- Clock.currentTime(java.util.concurrent.TimeUnit.MILLISECONDS)
+          latency = endTime - startTime
+
+          _ <- tracing.setAttribute("slack.api.latency_ms", latency.toString)
+          _ <- tracing.setAttribute("slack.bot.user_id", parsed.user_id)
+          _ <- tracing.setAttribute("slack.bot.username", parsed.user)
+          _ <- tracing.addEvent("slack_api_response_received")
+
           _ <- ZIO.logInfo(s"✅ auth.test success: user_id=${parsed.user_id} user=${parsed.user}")
-        } yield parsed).provideLayer(ZLayer.succeed(Scope.global)).mapError {
+        } yield parsed) @@ tracing.aspects.span("slack.api.auth_test")).mapError {
           case e: Error     => e
           case t: Throwable => DecodeError(s"Request failed: ${t.getMessage}", t.toString)
         }
@@ -274,8 +319,15 @@ object SlackApiClient {
       override def getConversationReplies(
           channel: ChannelId,
           threadTs: ThreadId
-      ): IO[Error, ConversationRepliesResponse] =
-        (for {
+      ): ZIO[Scope, Error, ConversationRepliesResponse] =
+        ((for {
+          startTime <- Clock.currentTime(java.util.concurrent.TimeUnit.MILLISECONDS)
+
+          _ <- tracing.setAttribute("slack.api", "conversations.replies")
+          _ <- tracing.setAttribute("slack.channel", channel.value)
+          _ <- tracing.setAttribute("slack.thread_ts", threadTs.formatted)
+          _ <- tracing.addEvent("slack_api_request_start")
+
           _ <- ZIO.logInfo(
             s"🔄 Fetching thread history: channel=${channel.value} ts=${threadTs.formatted}"
           )
@@ -299,9 +351,17 @@ object SlackApiClient {
             body.fromJson[ConversationRepliesResponse].left.map(msg => DecodeError(msg, body))
           )
           _ <- ZIO.fail(ApiError(parsed.error.getOrElse("unknown"))).when(!parsed.ok)
+
+          endTime <- Clock.currentTime(java.util.concurrent.TimeUnit.MILLISECONDS)
+          latency = endTime - startTime
           msgCount = parsed.messages.map(_.size).getOrElse(0)
+
+          _ <- tracing.setAttribute("slack.api.latency_ms", latency.toString)
+          _ <- tracing.setAttribute("slack.thread.message_count", msgCount.toString)
+          _ <- tracing.addEvent("slack_api_response_received")
+
           _ <- ZIO.logInfo(s"✅ Fetched $msgCount messages from thread")
-        } yield parsed).provideLayer(ZLayer.succeed(Scope.global)).mapError {
+        } yield parsed) @@ tracing.aspects.span("slack.api.conversations_replies")).mapError {
           case e: Error     => e
           case t: Throwable => DecodeError(s"Request failed: ${t.getMessage}", t.toString)
         }
@@ -310,7 +370,7 @@ object SlackApiClient {
           channel: ChannelId,
           timestamp: MessageId,
           name: String
-      ): IO[Error, Unit] = {
+      ): ZIO[Scope, Error, Unit] = {
         val reqBody = ReactionRequest(
           channel = channel.value,
           timestamp = timestamp.formatted,
@@ -327,7 +387,15 @@ object SlackApiClient {
           body = Body.fromString(bodyJson)
         )
 
-        (for {
+        ((for {
+          startTime <- Clock.currentTime(java.util.concurrent.TimeUnit.MILLISECONDS)
+
+          _ <- tracing.setAttribute("slack.api", "reactions.add")
+          _ <- tracing.setAttribute("slack.channel", channel.value)
+          _ <- tracing.setAttribute("slack.message_ts", timestamp.formatted)
+          _ <- tracing.setAttribute("slack.reaction.emoji", name)
+          _ <- tracing.addEvent("slack_api_request_start")
+
           resp <- client.request(req)
           body <- resp.body.asString
           _ <- ZIO.fail(HttpError(resp.status, body)).when(!resp.status.isSuccess)
@@ -335,7 +403,14 @@ object SlackApiClient {
             body.fromJson[ReactionResponse].left.map(msg => DecodeError(msg, body))
           )
           _ <- ZIO.fail(ApiError(parsed.error.getOrElse("unknown"))).when(!parsed.ok)
-        } yield ()).provideLayer(ZLayer.succeed(Scope.global)).mapError {
+
+          endTime <- Clock.currentTime(java.util.concurrent.TimeUnit.MILLISECONDS)
+          latency = endTime - startTime
+
+          _ <- tracing.setAttribute("slack.api.latency_ms", latency.toString)
+          _ <- tracing.addEvent("slack_api_response_received")
+
+        } yield ()) @@ tracing.aspects.span("slack.api.reactions_add")).mapError {
           case e: Error     => e
           case t: Throwable => DecodeError(s"Request failed: ${t.getMessage}", t.toString)
         }
@@ -345,7 +420,7 @@ object SlackApiClient {
           channel: ChannelId,
           timestamp: MessageId,
           name: String
-      ): IO[Error, Unit] = {
+      ): ZIO[Scope, Error, Unit] = {
         val reqBody = ReactionRequest(
           channel = channel.value,
           timestamp = timestamp.formatted,
@@ -362,7 +437,15 @@ object SlackApiClient {
           body = Body.fromString(bodyJson)
         )
 
-        (for {
+        ((for {
+          startTime <- Clock.currentTime(java.util.concurrent.TimeUnit.MILLISECONDS)
+
+          _ <- tracing.setAttribute("slack.api", "reactions.remove")
+          _ <- tracing.setAttribute("slack.channel", channel.value)
+          _ <- tracing.setAttribute("slack.message_ts", timestamp.formatted)
+          _ <- tracing.setAttribute("slack.reaction.emoji", name)
+          _ <- tracing.addEvent("slack_api_request_start")
+
           resp <- client.request(req)
           body <- resp.body.asString
           _ <- ZIO.fail(HttpError(resp.status, body)).when(!resp.status.isSuccess)
@@ -370,21 +453,29 @@ object SlackApiClient {
             body.fromJson[ReactionResponse].left.map(msg => DecodeError(msg, body))
           )
           _ <- ZIO.fail(ApiError(parsed.error.getOrElse("unknown"))).when(!parsed.ok)
-        } yield ()).provideLayer(ZLayer.succeed(Scope.global)).mapError {
+
+          endTime <- Clock.currentTime(java.util.concurrent.TimeUnit.MILLISECONDS)
+          latency = endTime - startTime
+
+          _ <- tracing.setAttribute("slack.api.latency_ms", latency.toString)
+          _ <- tracing.addEvent("slack_api_response_received")
+
+        } yield ()) @@ tracing.aspects.span("slack.api.reactions_remove")).mapError {
           case e: Error     => e
           case t: Throwable => DecodeError(s"Request failed: ${t.getMessage}", t.toString)
         }
       }
     }
 
-    val layer: ZLayer[Client, Throwable, SlackApiClient] =
+    val layer: ZLayer[Client & Tracing & Scope, Throwable, SlackApiClient] =
       ZLayer.fromZIO {
         for {
           client <- ZIO.service[Client]
+          tracing <- ZIO.service[Tracing]
           cfg <- ZIO
             .config(AppConfig.config)
             .mapError(e => new RuntimeException(s"Config error: ${e.getMessage}", e))
-        } yield Service(client, cfg.slackAppToken, cfg.slackBotToken)
+        } yield Service(client, cfg.slackAppToken, cfg.slackBotToken, tracing)
       }
   }
 
@@ -392,7 +483,7 @@ object SlackApiClient {
 
     val layer: ULayer[SlackApiClient] = ZLayer.succeed {
       new SlackApiClient {
-        override def requestSocketUrl: ZIO[Any, SlackApiClient.Error, SlackApiClient.Connection] =
+        override def requestSocketUrl: ZIO[Scope, SlackApiClient.Error, SlackApiClient.Connection] =
           ZIO.logInfo("🌐 STUB: SlackApiClient.requestSocketUrl called") *>
             ZIO.succeed(SlackApiClient.Connection("wss://stub-url.com"))
 
@@ -400,13 +491,13 @@ object SlackApiClient {
             channelId: ChannelId,
             text: String,
             threadTs: Option[ThreadId]
-        ): IO[SlackApiClient.Error, String] =
+        ): ZIO[Scope, SlackApiClient.Error, String] =
           ZIO.logInfo(
             s"🌐 STUB: postMessage to ${channelId.value}${threadTs.map(t => s" thread ${t.formatted}").getOrElse("")}: $text"
           ) *>
             ZIO.succeed("1234567890.123456")
 
-        override def authTest: IO[SlackApiClient.Error, SlackApiClient.AuthTestResponse] =
+        override def authTest: ZIO[Scope, SlackApiClient.Error, SlackApiClient.AuthTestResponse] =
           ZIO.logInfo("🌐 STUB: authTest called") *>
             ZIO.succeed(
               SlackApiClient.AuthTestResponse(
@@ -425,7 +516,7 @@ object SlackApiClient {
             channel: ChannelId,
             timestamp: MessageId,
             name: String
-        ): IO[SlackApiClient.Error, Unit] =
+        ): ZIO[Scope, SlackApiClient.Error, Unit] =
           ZIO.logInfo(
             s"🌐 STUB: addReaction :$name: to message ${timestamp.formatted} in ${channel.value}"
           )
@@ -434,7 +525,7 @@ object SlackApiClient {
             channel: ChannelId,
             timestamp: MessageId,
             name: String
-        ): IO[SlackApiClient.Error, Unit] =
+        ): ZIO[Scope, SlackApiClient.Error, Unit] =
           ZIO.logInfo(
             s"🌐 STUB: removeReaction :$name: from message ${timestamp.formatted} in ${channel.value}"
           )
@@ -442,7 +533,7 @@ object SlackApiClient {
         override def getConversationReplies(
             channel: ChannelId,
             threadTs: ThreadId
-        ): IO[SlackApiClient.Error, SlackApiClient.ConversationRepliesResponse] =
+        ): ZIO[Scope, SlackApiClient.Error, SlackApiClient.ConversationRepliesResponse] =
           ZIO.logInfo(
             s"🌐 STUB: getConversationReplies channel=${channel.value} ts=${threadTs.formatted}"
           ) *>

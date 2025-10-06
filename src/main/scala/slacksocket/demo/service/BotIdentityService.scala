@@ -33,25 +33,27 @@ object BotIdentityService:
 
         case None =>
           // Not cached yet - fetch from Slack API
-          for {
-            _ <- ZIO.logInfo("🤖 BOT_IDENTITY: Fetching bot identity from Slack API...")
+          ZIO.scoped {
+            for {
+              _ <- ZIO.logInfo("🤖 BOT_IDENTITY: Fetching bot identity from Slack API...")
 
-            response <- slackClient.authTest
-              .mapError(e => SlackApiError(s"Failed to fetch bot identity: ${e.getMessage}"))
+              response <- slackClient.authTest
+                .mapError(e => SlackApiError(s"Failed to fetch bot identity: ${e.getMessage}"))
 
-            identity = BotIdentity(
-              userId = UserId(response.user_id),
-              username = response.user,
-              displayName = None // auth.test doesn't provide display name
-            )
+              identity = BotIdentity(
+                userId = UserId(response.user_id),
+                username = response.user,
+                displayName = None // auth.test doesn't provide display name
+              )
 
-            _ <- cachedIdentity.set(Some(identity))
+              _ <- cachedIdentity.set(Some(identity))
 
-            _ <- ZIO.logInfo(
-              s"✅ BOT_IDENTITY: Cached bot identity - userId=${identity.userId.value} username=${identity.username}"
-            )
+              _ <- ZIO.logInfo(
+                s"✅ BOT_IDENTITY: Cached bot identity - userId=${identity.userId.value} username=${identity.username}"
+              )
 
-          } yield identity
+            } yield identity
+          }
       }
 
   object Live:

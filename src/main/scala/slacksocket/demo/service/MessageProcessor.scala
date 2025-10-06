@@ -59,46 +59,50 @@ object MessageProcessorService:
           channelId: ChannelId,
           threadId: ThreadId
       ): IO[Throwable, Thread] =
-        for {
-          _ <- ZIO.logInfo(
-            s"🔄 THREAD_RECOVERY: Fetching thread ${threadId.formatted} from Slack API"
-          )
-          botIdentity <- botIdentityService.getBotIdentity.orDie
-          response <- slackApiClient
-            .getConversationReplies(channelId, threadId)
-            .mapError(err => new RuntimeException(s"Slack API error: ${err.getMessage}"))
-          slackMessages <- ZIO
-            .fromOption(response.messages)
-            .orElseFail(new RuntimeException("No messages in thread"))
-          threadAndMessages <- ZIO
-            .fromOption(
-              Thread.fromSlackMessages(
-                slackMessages,
-                botIdentity.userId.value,
-                channelId,
-                botIdentity
-              )
+        ZIO.scoped {
+          for {
+            _ <- ZIO.logInfo(
+              s"🔄 THREAD_RECOVERY: Fetching thread ${threadId.formatted} from Slack API"
             )
-            .orElseFail(
-              new RuntimeException(
-                "Thread recovery failed: first message doesn't mention bot"
+            botIdentity <- botIdentityService.getBotIdentity.orDie
+            response <- slackApiClient
+              .getConversationReplies(channelId, threadId)
+              .mapError(err => new RuntimeException(s"Slack API error: ${err.getMessage}"))
+            slackMessages <- ZIO
+              .fromOption(response.messages)
+              .orElseFail(new RuntimeException("No messages in thread"))
+            threadAndMessages <- ZIO
+              .fromOption(
+                Thread.fromSlackMessages(
+                  slackMessages,
+                  botIdentity.userId.value,
+                  channelId,
+                  botIdentity
+                )
               )
+              .orElseFail(
+                new RuntimeException(
+                  "Thread recovery failed: first message doesn't mention bot"
+                )
+              )
+            (thread, messages) = threadAndMessages
+            // Store the thread metadata
+            _ <- messageStore
+              .storeThread(thread)
+              .mapError(err => new RuntimeException(s"Storage error: ${err.getMessage}"))
+            // Store each individual message
+            _ <- ZIO.foreach(messages) { msg =>
+              messageStore
+                .store(msg)
+                .mapError(err =>
+                  new RuntimeException(s"Failed to store message: ${err.getMessage}")
+                )
+            }
+            _ <- ZIO.logInfo(
+              s"✅ THREAD_RECOVERED: id=${threadId.formatted} with ${messages.size} messages from Slack"
             )
-          (thread, messages) = threadAndMessages
-          // Store the thread metadata
-          _ <- messageStore
-            .storeThread(thread)
-            .mapError(err => new RuntimeException(s"Storage error: ${err.getMessage}"))
-          // Store each individual message
-          _ <- ZIO.foreach(messages) { msg =>
-            messageStore
-              .store(msg)
-              .mapError(err => new RuntimeException(s"Failed to store message: ${err.getMessage}"))
-          }
-          _ <- ZIO.logInfo(
-            s"✅ THREAD_RECOVERED: id=${threadId.formatted} with ${messages.size} messages from Slack"
-          )
-        } yield thread
+          } yield thread
+        }
 
       /** Helper to handle thread reply storage for any channel type. The channel_type
         * (channel/im/group/mpim) is Slack transport detail - our domain model doesn't care about it

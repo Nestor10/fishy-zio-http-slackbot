@@ -4,7 +4,7 @@ import zio._
 import zio.config.magnolia.deriveConfig
 
 final case class LlmConfig(
-    baseUrl: String = "http://localhost:11434", // Ollama default, OpenAI: https://api.openai.com
+    baseUrl: String = "http://127.0.0.1:11434", // Ollama default, OpenAI: https://api.openai.com
     apiKey: Option[String] = None, // Required for OpenAI, Anthropic, etc; not needed for Ollama
     model: String = "qwen2.5:0.5b",
     temperature: Option[Double] = Some(0.7),
