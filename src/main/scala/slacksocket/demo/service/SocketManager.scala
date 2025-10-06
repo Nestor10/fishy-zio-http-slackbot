@@ -6,6 +6,7 @@ import zio.json.*
 import slacksocket.demo.conf.AppConfig
 import slacksocket.demo.domain.socket.{SocketId, SocketConnectionState, InboundQueue}
 import slacksocket.demo.domain.slack.BusinessMessage
+import slacksocket.demo.otel.SocketMetrics
 import java.util.concurrent.TimeUnit
 
 trait SocketManager:
@@ -22,6 +23,7 @@ object SocketManager:
     case class Live(
         socketService: SocketService,
         slackApiClient: SlackApiClient,
+        socketMetrics: SocketMetrics,
         cfg: AppConfig,
         client: Client,
         inboundQueue: InboundQueue,
@@ -100,13 +102,31 @@ object SocketManager:
               connectionFibersRef.get.flatMap { fibers =>
                 fibers.get(socketId) match {
                   case Some(fiber) =>
-                    ZIO.logInfo(s"🔌 SOCKET_MANAGER: Interrupting unhealthy socket $socketId") *>
-                      fiber.interrupt.timeout(2.seconds).flatMap {
-                        case Some(_) =>
-                          ZIO.logDebug(s"🔌 Socket $socketId fiber interrupted successfully")
+                    // Calculate connection duration if we have connectedAt
+                    val durationEffect =
+                      unhealthyConnections.get(socketId).flatMap(_.connectedAt) match {
+                        case Some(connectedAt) =>
+                          val now = java.time.Instant.now()
+                          val durationSeconds =
+                            java.time.Duration.between(connectedAt, now).getSeconds
+                          ZIO.succeed(Some(durationSeconds))
                         case None =>
-                          ZIO.logWarning(s"🔌 Socket $socketId fiber interrupt timed out")
+                          ZIO.succeed(None)
                       }
+
+                    durationEffect.flatMap { duration =>
+                      // Record connection closed event
+                      socketMetrics.recordConnectionClosed(socketId.value, "unhealthy", duration) *>
+                        ZIO.logInfo(
+                          s"🔌 SOCKET_MANAGER: Interrupting unhealthy socket $socketId"
+                        ) *>
+                        fiber.interrupt.timeout(2.seconds).flatMap {
+                          case Some(_) =>
+                            ZIO.logDebug(s"🔌 Socket $socketId fiber interrupted successfully")
+                          case None =>
+                            ZIO.logWarning(s"🔌 Socket $socketId fiber interrupt timed out")
+                        }
+                    }
                   case None =>
                     ZIO.logWarning(s"🔌 No fiber found for unhealthy socket $socketId")
                 }
@@ -171,6 +191,10 @@ object SocketManager:
             }
           url <- finalUrl
           _ <- ZIO.logInfo(s"🔌 SOCKET_MANAGER: Starting socket $socketId with URL $url")
+
+          // Record connection started event
+          _ <- socketMetrics.recordConnectionStarted(socketId.value)
+
           fiber <- connectSocket(socketId, url)
             .provideEnvironment(ZEnvironment(inboundQueue, client))
             .fork
@@ -181,9 +205,11 @@ object SocketManager:
           val errorCategory = categorizeError(e)
           val errorDetails = s"${e.getClass.getSimpleName}: ${e.getMessage}"
 
-          ZIO.logError(
-            s"❌ SOCKET_START_FAILED: socket=$socketId category=$errorCategory error=$errorDetails"
-          ) *>
+          // Record network error metric
+          socketMetrics.recordNetworkError(socketId.value, errorCategory) *>
+            ZIO.logError(
+              s"❌ SOCKET_START_FAILED: socket=$socketId category=$errorCategory error=$errorDetails"
+            ) *>
             ZIO.logDebug(s"🔍 SOCKET_ERROR_STACKTRACE: socket=$socketId - ${e.toString}")
         }
 
@@ -234,7 +260,7 @@ object SocketManager:
     }
 
     val layer: ZLayer[
-      SocketService & SlackApiClient & Client & InboundQueue,
+      SocketService & SlackApiClient & SocketMetrics & Client & InboundQueue,
       Throwable,
       SocketManager
     ] =
@@ -242,6 +268,7 @@ object SocketManager:
         for {
           socketService <- ZIO.service[SocketService]
           slackApiClient <- ZIO.service[SlackApiClient]
+          socketMetrics <- ZIO.service[SocketMetrics]
           client <- ZIO.service[Client]
           cfg <- ZIO
             .config(AppConfig.config)
@@ -253,6 +280,7 @@ object SocketManager:
         } yield Live(
           socketService,
           slackApiClient,
+          socketMetrics,
           cfg,
           client,
           inboundQueue,

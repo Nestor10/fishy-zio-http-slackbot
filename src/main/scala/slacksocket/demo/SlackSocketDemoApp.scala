@@ -13,8 +13,7 @@ import slacksocket.demo.service.{
   LLMService
 }
 import slacksocket.demo.processor.{AiBotProcessor, AnalyticsProcessor, NotificationProcessor}
-import slacksocket.demo.otel.OpenTelemetrySetup
-import slacksocket.demo.otel.StorageMetrics
+import slacksocket.demo.otel.{OpenTelemetrySetup, StorageMetrics, SocketMetrics}
 import slacksocket.demo.domain.socket.{SocketId, InboundQueue}
 import slacksocket.demo.domain.slack.{
   BusinessMessage,
@@ -126,7 +125,9 @@ object SlackSocketDemoApp extends ZIOAppDefault {
             SocketService.Live.layer,
             SlackApiClient.Live.layer,
             BotIdentityService.Live.layer, // Phase 8: Bot identity service (depends on SlackApiClient)
-            SocketManager.Live.layer,
+            SocketMetrics.layer, // Phase 13: Socket event recording (counters/histograms - depends on Meter only)
+            SocketManager.Live.layer, // Depends on SocketMetrics for event recording
+            SocketMetrics.observableGaugesLayer, // Phase 13: Socket state gauges (depends on SocketManager + Meter)
             MessageEventBus.Live.layer, // Phase 2: Event broadcasting (no dependencies)
             MessageStore.InMemory.layer, // Phase 1/7a: In-memory storage (depends on MessageEventBus)
             StorageMetrics.layer, // Phase 13: Storage metrics (ObservableGauge callbacks - depends on Meter + MessageStore)
