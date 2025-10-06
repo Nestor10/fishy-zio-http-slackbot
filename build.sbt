@@ -41,7 +41,17 @@ lazy val root = project
       "dev.zio" %% "zio-config" % "4.0.5",
       "dev.zio" %% "zio-config-magnolia" % "4.0.5",
       "dev.zio" %% "zio-config-typesafe" % "4.0.5",
-      "dev.zio" %% "zio-json" % "0.7.44"
+      "dev.zio" %% "zio-json" % "0.7.44",
+      
+      // OpenTelemetry + ZIO integration (Observability: Traces, Metrics, Logs)
+      "dev.zio" %% "zio-opentelemetry" % "3.1.10",
+      "dev.zio" %% "zio-opentelemetry-zio-logging" % "3.1.10", // Trace correlation in logs
+      "io.opentelemetry" % "opentelemetry-sdk" % "1.42.1",
+      "io.opentelemetry" % "opentelemetry-exporter-otlp" % "1.42.1",
+      
+      // ZIO Logging for structured logs
+      "dev.zio" %% "zio-logging" % "2.4.0",
+      "dev.zio" %% "zio-logging-slf4j2-bridge" % "2.4.0" // Bridge to SLF4J for existing logs
     )
   )
 
