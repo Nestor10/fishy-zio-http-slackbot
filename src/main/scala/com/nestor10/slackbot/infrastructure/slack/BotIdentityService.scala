@@ -1,4 +1,4 @@
-package com.nestor10.slackbot.service
+package com.nestor10.slackbot.infrastructure.slack
 
 import zio.*
 import com.nestor10.slackbot.domain.model.conversation.{BotIdentity, UserId}

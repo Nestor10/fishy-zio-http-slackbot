@@ -3,14 +3,10 @@ package com.nestor10.slackbot
 import com.nestor10.slackbot.conf.AppConfig
 import com.nestor10.slackbot.domain.service.MessageEventBus
 import com.nestor10.slackbot.application.{SlackEventOrchestrator, ProcessorRegistry}
-import com.nestor10.slackbot.service.{
-  SocketService,
-  SlackApiClient,
-  BotIdentityService,
-  SocketManager,
-  MessageStore,
-  LLMService
-}
+import com.nestor10.slackbot.infrastructure.socket.{SocketService, SocketManager}
+import com.nestor10.slackbot.infrastructure.slack.{SlackApiClient, BotIdentityService}
+import com.nestor10.slackbot.infrastructure.storage.MessageStore
+import com.nestor10.slackbot.infrastructure.llm.LLMService
 import com.nestor10.slackbot.domain.processor.{
   AiBotProcessor,
   AnalyticsProcessor,

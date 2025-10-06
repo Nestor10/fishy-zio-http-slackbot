@@ -1,4 +1,4 @@
-package com.nestor10.slackbot.service
+package com.nestor10.slackbot.infrastructure.llm
 
 import zio.*
 import zio.http.*

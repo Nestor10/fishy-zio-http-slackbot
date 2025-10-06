@@ -3,7 +3,7 @@ package com.nestor10.slackbot.domain.model.conversation
 import zio.json.*
 import java.time.Instant
 import com.nestor10.slackbot.domain.model.slack.*
-import com.nestor10.slackbot.service.SlackApiClient.ConversationMessage
+import com.nestor10.slackbot.infrastructure.slack.SlackApiClient.ConversationMessage
 
 // Core identifiers
 case class ThreadId(value: Double) extends AnyVal {

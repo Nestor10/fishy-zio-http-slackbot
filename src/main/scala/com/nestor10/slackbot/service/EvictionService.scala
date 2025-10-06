@@ -1,5 +1,7 @@
 package com.nestor10.slackbot.service
 
+import com.nestor10.slackbot.infrastructure.storage.MessageStore
+
 import zio.*
 import com.nestor10.slackbot.domain.model.conversation.{ThreadId, MessageId, ThreadMessage, Thread}
 import scala.collection.immutable.SortedMap

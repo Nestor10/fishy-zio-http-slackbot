@@ -1,11 +1,11 @@
-package com.nestor10.slackbot.service
+package com.nestor10.slackbot.infrastructure.socket
 
 import zio._
 import zio.http.ChannelEvent.{Read, UserEvent, UserEventTriggered}
 import zio.http._
 import zio.json._
 import com.nestor10.slackbot.conf.AppConfig
-import com.nestor10.slackbot.service.SlackApiClient
+import com.nestor10.slackbot.infrastructure.slack.SlackApiClient
 import com.nestor10.slackbot.domain.model.socket.{SocketId, SocketConnectionState, InboundQueue}
 import com.nestor10.slackbot.domain.model.slack.BusinessMessage
 import com.nestor10.slackbot.domain.model.slack.{

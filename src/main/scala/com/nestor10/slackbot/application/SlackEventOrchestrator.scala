@@ -24,9 +24,9 @@ import com.nestor10.slackbot.domain.model.conversation.{
   UserId
 }
 import java.time.Instant
-import com.nestor10.slackbot.service.MessageStore
-import com.nestor10.slackbot.service.BotIdentityService
-import com.nestor10.slackbot.service.SlackApiClient
+import com.nestor10.slackbot.infrastructure.storage.MessageStore
+import com.nestor10.slackbot.infrastructure.slack.BotIdentityService
+import com.nestor10.slackbot.infrastructure.slack.SlackApiClient
 
 trait SlackEventOrchestrator:
   def processMessage(message: BusinessMessage): UIO[BusinessMessage]

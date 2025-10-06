@@ -2,7 +2,9 @@ package com.nestor10.slackbot.domain.processor
 
 import zio.*
 import zio.telemetry.opentelemetry.tracing.Tracing
-import com.nestor10.slackbot.service.{MessageStore, LLMService, SlackApiClient}
+import com.nestor10.slackbot.infrastructure.storage.MessageStore
+import com.nestor10.slackbot.infrastructure.llm.LLMService
+import com.nestor10.slackbot.infrastructure.slack.SlackApiClient
 import com.nestor10.slackbot.domain.service.MessageEventBus
 import com.nestor10.slackbot.domain.service.MessageEventBus.MessageEvent
 import com.nestor10.slackbot.domain.model.llm.{ChatMessage, ChatRole}

@@ -2,7 +2,7 @@ package com.nestor10.slackbot.otel
 
 import zio.*
 import zio.telemetry.opentelemetry.metrics.Meter
-import com.nestor10.slackbot.service.MessageStore
+import com.nestor10.slackbot.infrastructure.storage.MessageStore
 
 /** OpenTelemetry metrics for MessageStore.
   *

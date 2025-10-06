@@ -2,7 +2,7 @@ package com.nestor10.slackbot.otel
 
 import zio.*
 import zio.telemetry.opentelemetry.metrics.Meter
-import com.nestor10.slackbot.service.SocketManager
+import com.nestor10.slackbot.infrastructure.socket.SocketManager
 import com.nestor10.slackbot.domain.model.socket.{SocketStatus, SocketConnectionState}
 import java.time.Instant
 
