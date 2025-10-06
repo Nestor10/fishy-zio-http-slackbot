@@ -1,4 +1,4 @@
-package com.nestor10.slackbot.service
+package com.nestor10.slackbot.application
 
 import zio.*
 import com.nestor10.slackbot.domain.model.socket.InboundQueue
@@ -24,11 +24,14 @@ import com.nestor10.slackbot.domain.model.conversation.{
   UserId
 }
 import java.time.Instant
+import com.nestor10.slackbot.service.MessageStore
+import com.nestor10.slackbot.service.BotIdentityService
+import com.nestor10.slackbot.service.SlackApiClient
 
-trait MessageProcessorService:
+trait SlackEventOrchestrator:
   def processMessage(message: BusinessMessage): UIO[BusinessMessage]
 
-object MessageProcessorService:
+object SlackEventOrchestrator:
 
   object Live:
 
@@ -39,7 +42,7 @@ object MessageProcessorService:
         messageStore: MessageStore,
         botIdentityService: BotIdentityService,
         slackApiClient: SlackApiClient
-    ) extends MessageProcessorService {
+    ) extends SlackEventOrchestrator {
 
       /** Recover a thread from Slack's conversation history.
         *
@@ -336,7 +339,7 @@ object MessageProcessorService:
     val layer: ZLayer[
       MessageStore & BotIdentityService & SlackApiClient,
       Nothing,
-      MessageProcessorService
+      SlackEventOrchestrator
     ] =
       ZLayer.fromZIO {
         for {
@@ -348,11 +351,11 @@ object MessageProcessorService:
 
   object Stub:
 
-    val layer: ZLayer[Any, Nothing, MessageProcessorService] = ZLayer {
-      ZIO.succeed(new MessageProcessorService {
+    val layer: ZLayer[Any, Nothing, SlackEventOrchestrator] = ZLayer {
+      ZIO.succeed(new SlackEventOrchestrator {
         override def processMessage(message: BusinessMessage): UIO[BusinessMessage] =
           ZIO.logInfo(
-            s"📡 STUB: MessageProcessorService.processMessage called for ${message.getClass.getSimpleName}"
+            s"📡 STUB: SlackEventOrchestrator.processMessage called for ${message.getClass.getSimpleName}"
           ) *>
             ZIO.succeed(message)
       })

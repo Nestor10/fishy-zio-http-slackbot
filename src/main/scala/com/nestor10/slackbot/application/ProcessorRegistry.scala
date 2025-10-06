@@ -1,4 +1,4 @@
-package com.nestor10.slackbot.service
+package com.nestor10.slackbot.application
 
 import zio.*
 import com.nestor10.slackbot.domain.processor.EventProcessor

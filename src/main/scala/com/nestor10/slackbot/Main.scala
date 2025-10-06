@@ -2,14 +2,13 @@ package com.nestor10.slackbot
 
 import com.nestor10.slackbot.conf.AppConfig
 import com.nestor10.slackbot.domain.service.MessageEventBus
+import com.nestor10.slackbot.application.{SlackEventOrchestrator, ProcessorRegistry}
 import com.nestor10.slackbot.service.{
   SocketService,
   SlackApiClient,
   BotIdentityService,
   SocketManager,
-  MessageProcessorService,
   MessageStore,
-  ProcessorRegistry,
   LLMService
 }
 import com.nestor10.slackbot.domain.processor.{
@@ -83,8 +82,8 @@ object Main extends ZIOAppDefault {
               .fromQueue(qIn) // Source: Pull from queue
               .buffer(32) // Pipeline: Buffer for chunk efficiency
               .mapZIOParUnordered(4) { message => // Pipeline: Parallel processing (4 concurrent)
-                // Delegate all message processing to the MessageProcessorService service
-                ZIO.serviceWithZIO[MessageProcessorService](_.processMessage(message))
+                // Delegate all message processing to the SlackEventOrchestrator service
+                ZIO.serviceWithZIO[SlackEventOrchestrator](_.processMessage(message))
               }
               .buffer(16) // Pipeline: Buffer processed messages
               .tap(_ => ZIO.succeed(())) // Pipeline: Metrics/monitoring tap
@@ -135,7 +134,7 @@ object Main extends ZIOAppDefault {
             MessageEventBus.Live.layer, // Phase 2: Event broadcasting (no dependencies)
             MessageStore.InMemory.layer, // Phase 1/7a: In-memory storage (depends on MessageEventBus)
             StorageMetrics.layer, // Phase 13: Storage metrics (ObservableGauge callbacks - depends on Meter + MessageStore)
-            MessageProcessorService.Live.layer, // Phase 4/7b/8: Orchestrator (depends on MessageStore + BotIdentityService)
+            SlackEventOrchestrator.Live.layer, // Phase 4/7b/8: Orchestrator (depends on MessageStore + BotIdentityService)
             ProcessorRegistry.Live.layer, // Phase 3: Processor registry
             LLMService.configured, // Phase 6: LLM service (dynamic: Ollama or OpenAI based on config)
             AiBotProcessor.layer, // Phase 3/6b: AI bot with LLM integration
