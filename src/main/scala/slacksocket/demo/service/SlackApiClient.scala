@@ -67,6 +67,23 @@ trait SlackApiClient {
       timestamp: MessageId,
       name: String
   ): IO[SlackApiClient.Error, Unit]
+
+  /** Fetch all messages in a thread (for crash recovery).
+    *
+    * Uses conversations.replies API to retrieve thread history from Slack. Enables recovery of
+    * threads that were active when bot restarted.
+    *
+    * @param channel
+    *   Channel containing the thread
+    * @param threadTs
+    *   Thread timestamp (root message timestamp)
+    * @return
+    *   All messages in the thread, oldest first
+    */
+  def getConversationReplies(
+      channel: ChannelId,
+      threadTs: ThreadId
+  ): IO[SlackApiClient.Error, SlackApiClient.ConversationRepliesResponse]
 }
 
 object SlackApiClient {
@@ -82,6 +99,23 @@ object SlackApiClient {
       user_id: String, // Bot user ID - THIS IS WHAT WE NEED!
       bot_id: Option[String],
       error: Option[String]
+  )
+
+  /** Response from conversations.replies endpoint - thread history */
+  final case class ConversationRepliesResponse(
+      ok: Boolean,
+      messages: Option[List[ConversationMessage]],
+      has_more: Option[Boolean],
+      error: Option[String]
+  )
+
+  /** Message from conversations.replies - simplified structure */
+  final case class ConversationMessage(
+      ts: String, // Message timestamp (thread_ts for first message)
+      user: Option[String], // User ID (None for bot messages)
+      bot_id: Option[String], // Bot ID if bot message
+      text: String,
+      thread_ts: Option[String] // Parent thread timestamp
   )
 
   sealed trait Error extends Throwable
@@ -110,6 +144,11 @@ object SlackApiClient {
   private given JsonDecoder[OpenResponse] = DeriveJsonDecoder.gen[OpenResponse]
 
   given JsonDecoder[AuthTestResponse] = DeriveJsonDecoder.gen[AuthTestResponse]
+
+  given JsonDecoder[ConversationMessage] = DeriveJsonDecoder.gen[ConversationMessage]
+
+  given JsonDecoder[ConversationRepliesResponse] =
+    DeriveJsonDecoder.gen[ConversationRepliesResponse]
 
   private final case class PostMessageRequest(
       channel: String,
@@ -227,6 +266,41 @@ object SlackApiClient {
           )
           _ <- ZIO.fail(ApiError(parsed.error.getOrElse("unknown"))).when(!parsed.ok)
           _ <- ZIO.logInfo(s"✅ auth.test success: user_id=${parsed.user_id} user=${parsed.user}")
+        } yield parsed).provideLayer(ZLayer.succeed(Scope.global)).mapError {
+          case e: Error     => e
+          case t: Throwable => DecodeError(s"Request failed: ${t.getMessage}", t.toString)
+        }
+
+      override def getConversationReplies(
+          channel: ChannelId,
+          threadTs: ThreadId
+      ): IO[Error, ConversationRepliesResponse] =
+        (for {
+          _ <- ZIO.logInfo(
+            s"🔄 Fetching thread history: channel=${channel.value} ts=${threadTs.formatted}"
+          )
+          // Build query parameters
+          params = s"channel=${channel.value}&ts=${threadTs.formatted}&limit=100"
+          req = Request(
+            method = Method.GET,
+            url = URL
+              .decode(s"https://slack.com/api/conversations.replies?$params")
+              .toOption
+              .get,
+            headers = Headers(
+              "Authorization" -> s"Bearer $botToken",
+              "Content-Type" -> "application/x-www-form-urlencoded"
+            )
+          )
+          resp <- client.request(req)
+          body <- resp.body.asString
+          _ <- ZIO.fail(HttpError(resp.status, body)).when(!resp.status.isSuccess)
+          parsed <- ZIO.fromEither(
+            body.fromJson[ConversationRepliesResponse].left.map(msg => DecodeError(msg, body))
+          )
+          _ <- ZIO.fail(ApiError(parsed.error.getOrElse("unknown"))).when(!parsed.ok)
+          msgCount = parsed.messages.map(_.size).getOrElse(0)
+          _ <- ZIO.logInfo(s"✅ Fetched $msgCount messages from thread")
         } yield parsed).provideLayer(ZLayer.succeed(Scope.global)).mapError {
           case e: Error     => e
           case t: Throwable => DecodeError(s"Request failed: ${t.getMessage}", t.toString)
@@ -364,6 +438,39 @@ object SlackApiClient {
           ZIO.logInfo(
             s"🌐 STUB: removeReaction :$name: from message ${timestamp.formatted} in ${channel.value}"
           )
+
+        override def getConversationReplies(
+            channel: ChannelId,
+            threadTs: ThreadId
+        ): IO[SlackApiClient.Error, SlackApiClient.ConversationRepliesResponse] =
+          ZIO.logInfo(
+            s"🌐 STUB: getConversationReplies channel=${channel.value} ts=${threadTs.formatted}"
+          ) *>
+            ZIO.succeed(
+              SlackApiClient.ConversationRepliesResponse(
+                ok = true,
+                messages = Some(
+                  List(
+                    SlackApiClient.ConversationMessage(
+                      ts = threadTs.formatted,
+                      user = Some("U123USER"),
+                      bot_id = None,
+                      text = "Hey <@U123STUBBOT> can you help?",
+                      thread_ts = Some(threadTs.formatted)
+                    ),
+                    SlackApiClient.ConversationMessage(
+                      ts = "1234567890.123457",
+                      user = None,
+                      bot_id = Some("B123"),
+                      text = "Sure! How can I assist?",
+                      thread_ts = Some(threadTs.formatted)
+                    )
+                  )
+                ),
+                has_more = Some(false),
+                error = None
+              )
+            )
       }
     }
   }

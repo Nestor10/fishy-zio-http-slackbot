@@ -1,6 +1,16 @@
 val scala3Version = "3.7.2"
 
+// Fork JVM for run and reStart (prevents sbt locking, cleaner shutdown)
 ThisBuild / run / fork := true
+Compile / run / fork := true
+reStart / fork := true
+
+// JVM options for forked processes (optional but recommended)
+ThisBuild / run / javaOptions ++= Seq(
+  "-Xmx512m",                    // Max heap 512MB
+  "-XX:+UseG1GC",                // Use G1 garbage collector
+  "-XX:MaxGCPauseMillis=200"     // Target max GC pause
+)
 
 lazy val root = project
   .in(file("."))
@@ -15,17 +25,23 @@ lazy val root = project
   ThisBuild / scalacOptions += "-Ysemanticdb",
   // Explicit main class (used by run & reStart)
   Compile / mainClass := Some("slacksocket.demo.SlackSocketDemoApp"),
+  // Use ZIO Test framework for running tests
+  testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
 
     libraryDependencies ++= Seq(
-      "org.scalameta" %% "munit" % "1.0.0" % Test,
-      "dev.zio" %% "zio-http" % "3.5.0",
+      // ZIO Test - the official testing library for ZIO (Zionomicon Chapter 2)
+      "dev.zio" %% "zio-test" % "2.1.21" % Test,
+      "dev.zio" %% "zio-test-sbt" % "2.1.21" % Test,
+      "dev.zio" %% "zio-test-magnolia" % "2.1.21" % Test, // Auto-derive test instances
+      
+      "dev.zio" %% "zio-http" % "3.5.1",
       // Logging dependencies for Netty internal logs via SLF4J
       "ch.qos.logback" % "logback-classic" % "1.5.6",
       // zio-config core + magnolia derivation + typesafe (HOCON) + refinement (optional)
-      "dev.zio" %% "zio-config" % "4.0.4",
-      "dev.zio" %% "zio-config-magnolia" % "4.0.4",
-      "dev.zio" %% "zio-config-typesafe" % "4.0.4"
-  , "dev.zio" %% "zio-json" % "0.7.3"
+      "dev.zio" %% "zio-config" % "4.0.5",
+      "dev.zio" %% "zio-config-magnolia" % "4.0.5",
+      "dev.zio" %% "zio-config-typesafe" % "4.0.5",
+      "dev.zio" %% "zio-json" % "0.7.44"
     )
   )
 

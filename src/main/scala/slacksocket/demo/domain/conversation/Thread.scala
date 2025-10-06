@@ -197,6 +197,7 @@ case class ThreadState(
 ) derives JsonCodec
 
 // Main thread domain object - bot-centric view of a Slack thread
+// Note: Messages are stored separately in MessageStore, not embedded here
 case class Thread(
     id: ThreadId,
     channelId: ChannelId,
@@ -206,9 +207,6 @@ case class Thread(
 
     // Thread root message (the message that started the thread)
     rootMessage: ThreadMessage,
-
-    // All messages in chronological order (including root)
-    messages: List[ThreadMessage],
 
     // Thread metadata and state
     state: ThreadState,
@@ -221,65 +219,26 @@ case class Thread(
     serviceMetadata: Map[String, Map[String, String]] = Map.empty // service -> key -> value
 ) derives JsonCodec {
 
-  def addMessage(message: ThreadMessage): Thread = {
-    require(message.threadId == id, "Message must belong to this thread")
-
-    val updatedMessages = messages :+ message
-    val updatedState = updateStateFromNewMessage(message)
-
-    copy(
-      messages = updatedMessages,
-      state = updatedState,
-      lastUpdatedAt = message.createdAt // Use message creation time for thread update
-    )
-  }
-
-  def updateMessage(messageId: MessageId, updater: ThreadMessage => ThreadMessage): Thread = {
-    val updatedMessages = messages.map { msg =>
-      if (msg.id == messageId) updater(msg) else msg
-    }
-    copy(
-      messages = updatedMessages,
-      lastUpdatedAt = Instant.now()
-    )
-  }
+  // Note: Methods that operate on messages (addMessage, updateMessage, etc.)
+  // have been removed. Use MessageStore to query and manipulate messages.
+  // Thread is now just metadata about the conversation.
 
   def deleteMessage(messageId: MessageId): Thread =
-    updateMessage(messageId, _.markDeleted)
+    copy(lastUpdatedAt = Instant.now())
 
-  def addReactionToMessage(messageId: MessageId, emoji: String, userId: UserId): Thread = {
-    val now = Instant.now()
-    updateMessage(messageId, _.addReaction(emoji, userId, now))
-  }
+  // Reaction methods now just update thread timestamp
+  // Actual reaction changes happen in MessageStore
+  def addReactionToMessage(messageId: MessageId, emoji: String, userId: UserId): Thread =
+    copy(lastUpdatedAt = Instant.now())
 
   def removeReactionFromMessage(messageId: MessageId, emoji: String, userId: UserId): Thread =
-    updateMessage(messageId, _.removeReaction(emoji, userId))
+    copy(lastUpdatedAt = Instant.now())
 
-  // Bot-specific queries
-  def botMessages: List[ThreadMessage] =
-    messages.filter(_.isFromBot(botIdentity))
-
-  def userMessages: List[ThreadMessage] =
-    messages.filter(_.isFromUser)
-
-  def externalServiceMessages: List[ThreadMessage] =
-    messages.filter(_.isFromExternalService)
-
-  def lastBotMessage: Option[ThreadMessage] =
-    botMessages.lastOption
-
-  def lastUserMessage: Option[ThreadMessage] =
-    userMessages.lastOption
-
-  def hasUnreadUserMessages: Boolean =
-    (lastUserMessage, lastBotMessage) match {
-      case (Some(userMsg), Some(botMsg)) => userMsg.createdAt.isAfter(botMsg.createdAt)
-      case (Some(_), None)               => true
-      case _                             => false
-    }
+  // Bot-specific queries removed - use MessageStore to query messages by threadId
+  // These methods can't work without the messages list
 
   def participants: Set[UserId] =
-    messages.map(_.author).toSet
+    Set(rootMessage.author) // At minimum, the thread starter
 
   // Service integration
   def addServiceMetadata(serviceName: String, key: String, value: String): Thread = {
@@ -290,17 +249,6 @@ case class Thread(
 
   def getServiceMetadata(serviceName: String, key: String): Option[String] =
     serviceMetadata.get(serviceName).flatMap(_.get(key))
-
-  private def updateStateFromNewMessage(message: ThreadMessage): ThreadState = {
-    val now = message.createdAt // Use when the message was originally created
-    val isBot = message.isFromBot(botIdentity)
-
-    state.copy(
-      participantCount = participants.size + 1, // +1 for the new message author
-      lastHumanActivity = if (!isBot) Some(now) else state.lastHumanActivity,
-      lastBotActivity = if (isBot) Some(now) else state.lastBotActivity
-    )
-  }
 }
 
 // Factory for creating threads from Slack messages
@@ -361,7 +309,6 @@ object Thread:
             channelId = channelId,
             botIdentity = botIdentity,
             rootMessage = threadMessage,
-            messages = List(threadMessage),
             state = ThreadState(
               participantCount = 1,
               lastHumanActivity = Some(now),
@@ -415,7 +362,6 @@ object Thread:
       channelId = channelId,
       botIdentity = botIdentity,
       rootMessage = threadMessage,
-      messages = List(threadMessage),
       state = ThreadState(
         participantCount = 1,
         lastHumanActivity = if (source == MessageSource.SlackUser) Some(now) else None,
@@ -447,3 +393,92 @@ object Thread:
       updatedAt = now // Initially same as created
     )
   }
+
+  /** Reconstruct a Thread from Slack conversation history (for crash recovery).
+    *
+    * This is used when the bot restarts and needs to recover an active thread from Slack's API.
+    * Only recovers threads where the bot was @mentioned in the first message.
+    *
+    * Returns both the Thread metadata AND the list of ThreadMessages to store separately.
+    *
+    * @param messages
+    *   List of ConversationMessage from Slack conversations.replies API
+    * @param botUserId
+    *   The bot's user ID to check for @mentions
+    * @param channelId
+    *   The channel where the thread exists
+    * @param botIdentity
+    *   The bot's identity for message classification
+    * @return
+    *   Some((Thread, List[ThreadMessage])) if first message contains @mention, None otherwise
+    */
+  def fromSlackMessages(
+      messages: List[slacksocket.demo.service.SlackApiClient.ConversationMessage],
+      botUserId: String,
+      channelId: ChannelId,
+      botIdentity: BotIdentity
+  ): Option[(Thread, List[ThreadMessage])] =
+    // Verify we have messages and first message mentions the bot
+    messages.headOption match {
+      case None           => None
+      case Some(firstMsg) =>
+        // Check if first message contains @mention of bot
+        val hasMention = firstMsg.text.contains(s"<@$botUserId>")
+        if (!hasMention) {
+          None // Not a thread created by @mention, skip recovery
+        } else {
+          val now = Instant.now() // Domain object creation time
+          val threadId = ThreadId(firstMsg.ts.toDouble)
+
+          // Convert all Slack messages to ThreadMessages
+          val threadMessages = messages.map { msg =>
+            val messageId = MessageId(msg.ts.toDouble)
+            val authorId = UserId(msg.user.getOrElse(msg.bot_id.getOrElse("unknown")))
+
+            // Classify message source
+            val source = if (msg.bot_id.isDefined) {
+              if (authorId.value == botUserId) MessageSource.Self
+              else MessageSource.SlackBot
+            } else {
+              MessageSource.SlackUser
+            }
+
+            ThreadMessage(
+              id = messageId,
+              threadId = threadId,
+              source = source,
+              author = authorId,
+              content = msg.text,
+              createdAt = now, // When we created this domain object (recovery time)
+              updatedAt = now,
+              slackCreatedAt = Some(slackTimestampToInstant(msg.ts.toDouble)),
+              slackEventId = None // Not from event stream
+            )
+          }
+
+          // First message is the root
+          threadMessages.headOption.map { rootMsg =>
+            // Calculate thread state from messages
+            val userMessages = threadMessages.filter(_.source == MessageSource.SlackUser)
+            val botMessages = threadMessages.filter(_.isFromBot(botIdentity))
+
+            val state = ThreadState(
+              participantCount = threadMessages.map(_.author).toSet.size,
+              lastHumanActivity = userMessages.lastOption.map(_.createdAt),
+              lastBotActivity = botMessages.lastOption.map(_.createdAt)
+            )
+
+            val thread = Thread(
+              id = threadId,
+              channelId = channelId,
+              botIdentity = botIdentity,
+              rootMessage = rootMsg,
+              state = state,
+              createdAt = now, // When we created this domain object (recovery time)
+              lastUpdatedAt = now
+            )
+
+            (thread, threadMessages) // Return BOTH thread and messages to store separately
+          }
+        }
+    }

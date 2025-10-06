@@ -4,33 +4,68 @@ import zio.*
 import slacksocket.demo.service.{MessageEventBus, MessageStore, LLMService, SlackApiClient}
 import slacksocket.demo.service.MessageEventBus.MessageEvent
 import slacksocket.demo.domain.llm.{ChatMessage, ChatRole}
-import slacksocket.demo.domain.conversation.{ThreadMessage, ChannelId, MessageId}
+import slacksocket.demo.domain.conversation.{ThreadMessage, ChannelId, MessageId, ThreadId}
 import slacksocket.demo.conf.AppConfig
+import java.time.Instant
 
-/** AI Bot processor with concurrent message handling.
+/** Per-thread worker: queue, fiber, and activity tracking */
+case class ThreadWorker(
+    queue: Queue[Instant],
+    fiber: Fiber.Runtime[Throwable, Unit], // Runtime fiber can be interrupted
+    lastActivity: Ref[Instant]
+)
+
+/** AI Bot processor with per-thread queue pattern (Actor-like).
   *
-  * Implements a "latest-wins" pattern with visual feedback via reactions:
-  *   - 🤖 (robot_face): Message is currently being processed (immutable, runs to completion)
-  *   - 🕐 (clock1): Message is waiting to be processed (mutable, can be replaced)
-  *   - ⬇️ (arrow_down): Message was skipped (replaced while waiting)
-  *   - ✅ (white_check_mark): Message was answered
+  * Implements isolated queues and workers per thread:
+  *   - Hub publishes ALL events (ThreadCreated, MessageStored) - stays DUMB ✅
+  *   - MessageStore publishes ALL events - stays DUMB ✅
+  *   - AiBotProcessor filters and manages per-thread workers - is SMART ✅
   *
-  * State Machine:
-  *   - PROCESSING: Once started, never interrupted. New messages don't affect it.
-  *   - WAITING: Only one message can wait. New message replaces it (old becomes SKIPPED).
-  *   - SKIPPED: Terminal state for messages that were waiting but got replaced.
+  * Pattern (Zionomicon Ch 9 + 11 + 14 + 30):
+  *   1. Events arrive with Slack timestamps (slackCreatedAt) 2. canProcess() filters for relevant
+  *      events (user messages only) 3. process() gets or creates a dedicated queue + worker for
+  *      this thread:
+  *      - Each thread has: Queue[Instant], Worker Fiber, Last Activity timestamp
+  *      - Timestamp deduplication happens per-thread (isolated state)
+  *      - Worker lifecycle: created on first event, killed after 1 hour idle 4. Each worker:
+  *      - Takes from its thread's queue (blocking, exclusive to this thread)
+  *      - Debounces 100ms
+  *      - Checks if timestamp still latest (same thread only, no cross-thread collision)
+  *      - Processes thread with full context from MessageStore 5. Cleanup fiber runs every 10
+  *        minutes:
+  *      - Finds workers idle > 1 hour
+  *      - Interrupts fiber, removes from map
+  *
+  * Why Per-Thread Queues:
+  *   - **Perfect isolation**: Thread A's worker never touches Thread B's queue ✅
+  *   - **Automatic parallelism**: N active threads = N workers processing concurrently ✅
+  *   - **Natural ordering**: Events for same thread processed sequentially in order ✅
+  *   - **No semaphore needed**: Each thread has exclusive worker, no collision possible ✅
+  *   - **Resource management**: Idle workers cleaned up after 1 hour ✅
+  *
+  * Example Scenario (3 concurrent threads):
+  *
+  * T=0: Thread A - Event(ts=1000) → create queue_A, worker_A, offer(1000) T=5: Thread B -
+  * Event(ts=2000) → create queue_B, worker_B, offer(2000) T=10: Thread A - Event(ts=1100) → reuse
+  * queue_A, offer(1100), slides out 1000 T=100: Worker A: take(1100), sleep(100ms), check, process
+  * A ← parallel Worker B: take(2000), sleep(100ms), check, process B ← parallel T=3600s: Cleanup
+  * fiber: Worker A idle 1hr → interrupt, remove from map
   *
   * Zionomicon References:
-  *   - Chapter 9: Ref for shared state (ProcessingState)
-  *   - Chapter 11: Queue work distribution (implicit via Ref.modify pattern)
-  *   - Chapter 17-18: Dependency Injection (Multi-service dependencies)
+  *   - Chapter 9: Ref for shared state (threadWorkers Map)
+  *   - Chapter 11: Queue.sliding for latest-wins per thread
+  *   - Chapter 14: Scoped resource management (worker fibers)
+  *   - Chapter 17-18: Dependency Injection
+  *   - Chapter 30: Debouncing for bursty event sources
   */
 class AiBotProcessor(
     llmService: LLMService,
     messageStore: MessageStore,
     slackClient: SlackApiClient,
     config: AppConfig,
-    processingState: Ref[AiBotProcessor.ProcessingState]
+    threadWorkers: Ref[Map[ThreadId, ThreadWorker]], // Per-thread queue + worker + activity
+    lastProcessedTimestamp: Ref[Map[ThreadId, Instant]] // Track last timestamp per thread
 ) extends MessageProcessor:
 
   import AiBotProcessor.*
@@ -45,89 +80,188 @@ class AiBotProcessor(
     case _ => false
 
   override def process(event: MessageEvent): IO[MessageProcessor.Error, Unit] =
-    event match
-      case MessageEvent.ThreadCreated(thread, timestamp) =>
-        // Initial @mention - acknowledge and queue for processing
-        handleMessage(thread.rootMessage, isInitialMention = true)
-          .catchAll { error =>
-            ZIO.logError(s"🤖 AI_BOT: Failed to handle thread creation: ${error.getMessage}") *>
-              ZIO.unit
-          }
-
-      case MessageEvent.MessageStored(message, timestamp) =>
-        // User replied in thread - queue for processing
-        handleMessage(message, isInitialMention = false)
-          .catchAll { error =>
-            ZIO.logError(s"🤖 AI_BOT: Failed to handle message: ${error.getMessage}") *>
-              ZIO.unit
-          }
-
+    // Extract threadId and timestamp from event
+    val (threadId, timestampOpt) = event match
+      case MessageEvent.ThreadCreated(thread, _) =>
+        (thread.id, thread.rootMessage.slackCreatedAt)
+      case MessageEvent.MessageStored(message, _) =>
+        (message.threadId, message.slackCreatedAt)
       case _ =>
-        ZIO.unit
+        return ZIO.unit // Should never happen due to canProcess filter
 
-  /** Handle incoming message with state machine transitions */
-  private def handleMessage(
-      message: ThreadMessage,
-      isInitialMention: Boolean
-  ): Task[Unit] =
-    processingState.modify { state =>
-      state match
-        // Case 1: Nothing processing, nothing waiting - START PROCESSING
-        case ProcessingState(None, None) =>
-          val actions =
-            addReaction(message, "robot_face") *>
-              ZIO.when(isInitialMention)(quickAcknowledge(message)) *>
-              startProcessing(message)
-          (actions, ProcessingState(Some(message), None))
+    // Skip events without timestamp (can't compare)
+    (timestampOpt match
+      case None =>
+        ZIO.logWarning(s"🤖 AI_BOT: Skipping event for ${threadId.formatted} (no Slack timestamp)")
 
-        // Case 2: Processing active, no waiting - ADD TO WAITING
-        case ProcessingState(Some(proc), None) =>
-          val actions = addReaction(message, "clock1")
-          (actions, ProcessingState(Some(proc), Some(message)))
+      case Some(timestamp) =>
+        // Check if this event is newer than what we've already processed for THIS thread
+        lastProcessedTimestamp.get.flatMap { processedMap =>
+          processedMap.get(threadId) match
+            case Some(lastProcessed) if timestamp.toEpochMilli <= lastProcessed.toEpochMilli =>
+              // This event is older or equal to what we already processed - skip it
+              ZIO.logDebug(
+                s"🤖 AI_BOT: Skipping stale event for ${threadId.formatted} " +
+                  s"(event=${timestamp.toEpochMilli}, processed=${lastProcessed.toEpochMilli})"
+              )
 
-        // Case 3: Processing active, waiting exists - REPLACE WAITING (skip old)
-        case ProcessingState(Some(proc), Some(oldWaiting)) =>
-          val actions =
-            removeReaction(oldWaiting, "clock1") *>
-              addReaction(oldWaiting, "arrow_down") *>
-              addReaction(message, "clock1")
-          (actions, ProcessingState(Some(proc), Some(message)))
+            case _ =>
+              // New event - get or create worker for this thread, then enqueue
+              for {
+                _ <- lastProcessedTimestamp.update(_ + (threadId -> timestamp))
+                worker <- getOrCreateWorker(threadId)
+                _ <- worker.queue.offer(timestamp)
+                _ <- worker.lastActivity.set(Instant.now) // Update activity timestamp
+                _ <- ZIO.logDebug(
+                  s"🤖 AI_BOT: Enqueued work for ${threadId.formatted} (timestamp=${timestamp.toEpochMilli})"
+                )
+              } yield ()
+        }
+    ).mapError(e => MessageProcessor.Error.ProcessingFailed(e, name)).as(())
 
-        // Case 4: Nothing processing but waiting exists (race condition recovery)
-        case ProcessingState(None, Some(waiting)) =>
-          val actions =
-            removeReaction(waiting, "clock1") *>
-              addReaction(waiting, "robot_face") *>
-              addReaction(message, "clock1") *>
-              startProcessing(waiting)
-          (actions, ProcessingState(Some(waiting), Some(message)))
-    }.flatten
+  /** Get existing worker for thread, or create new one if doesn't exist */
+  private def getOrCreateWorker(threadId: ThreadId): Task[ThreadWorker] =
+    threadWorkers.get.flatMap { workers =>
+      workers.get(threadId) match
+        case Some(existing) =>
+          ZIO.succeed(existing)
 
-  /** Start processing a message in a background fiber */
-  private def startProcessing(message: ThreadMessage): UIO[Unit] =
-    processMessage(message).forkDaemon.unit
+        case None =>
+          for {
+            // Create new queue (sliding, capacity 1 - latest wins for this thread)
+            queue <- Queue.sliding[Instant](1)
 
-  /** Process a single message (runs to completion, never interrupted) */
-  private def processMessage(message: ThreadMessage): Task[Unit] =
-    (for {
-      _ <- ZIO.logInfo(s"🤖 AI_BOT: Processing message ${message.id.formatted}")
+            // Track last activity for cleanup
+            lastActivity <- Ref.make(Instant.now)
+
+            // Fork dedicated worker for this thread
+            fiber <- consumeWorkForThread(threadId, queue).forkDaemon
+
+            // Create worker object
+            worker = ThreadWorker(queue, fiber, lastActivity)
+
+            // Add to map
+            _ <- threadWorkers.update(_ + (threadId -> worker))
+
+            _ <- ZIO.logInfo(
+              s"🤖 AI_BOT: Created new worker for ${threadId.formatted}"
+            )
+          } yield worker
+    }
+
+  /** Recursive monitoring loop: check if still latest every 10ms while LLM runs. This recursive
+    * pattern is the cleanest approach because both fiber.poll and verifyStillLatest are effectful
+    * operations (not pure Boolean checks).
+    *
+    * Returns true if should post response (LLM completed and still latest), false if superseded
+    * (LLM interrupted).
+    */
+  private def monitorLoop(
+      llmFiber: Fiber.Runtime[Throwable, String],
+      threadId: ThreadId,
+      heldTimestamp: Instant
+  ): Task[Boolean] =
+    llmFiber.poll.flatMap {
+      case Some(_) =>
+        // LLM finished - return true to signal "should post"
+        ZIO.succeed(true)
+
+      case None =>
+        // LLM still running - check if we're still latest
+        verifyStillLatest(threadId, heldTimestamp).flatMap {
+          case true =>
+            // Still latest - sleep and check again
+            ZIO.sleep(10.millis) *> monitorLoop(llmFiber, threadId, heldTimestamp)
+
+          case false =>
+            // Superseded - interrupt LLM and return false
+            llmFiber.interrupt *>
+              ZIO.logInfo(
+                s"🤖 AI_BOT: Interrupted LLM for ${threadId.formatted} - superseded during generation"
+              ) *>
+              ZIO.succeed(false) // Signal "do not post"
+        }
+    }
+
+  /** Consumer fiber for a specific thread - processes its queue exclusively. Uses continuous
+    * monitoring pattern: starts LLM call immediately, then continuously checks if still latest
+    * while LLM is running. Interrupts LLM if superseded.
+    */
+  private def consumeWorkForThread(threadId: ThreadId, queue: Queue[Instant]): Task[Unit] =
+    queue.take.flatMap { timestamp =>
+      for {
+        _ <- ZIO.logInfo(
+          s"🤖 AI_BOT: Worker for ${threadId.formatted} dequeued work (timestamp=${timestamp.toEpochMilli})"
+        )
+
+        // Start LLM call immediately (no debounce delay!)
+        llmFiber <- generateResponse(threadId).fork
+
+        // Continuous monitor: check if still latest every 10ms while LLM runs
+        // Returns true if should post, false if interrupted
+        shouldPost <- monitorLoop(llmFiber, threadId, timestamp).catchAll { error =>
+          // If monitor fails, interrupt LLM and don't post
+          llmFiber.interrupt *>
+            ZIO.logInfo(
+              s"🤖 AI_BOT: Monitor failed for ${threadId.formatted}: ${error.getMessage}"
+            ) *>
+            ZIO.succeed(false)
+        }
+
+        // Only post if monitor says we should (LLM completed and still latest)
+        _ <-
+          if (shouldPost) {
+            llmFiber.join
+              .flatMap { response =>
+                postResponse(threadId, response)
+              }
+              .catchAll { error =>
+                ZIO.logError(
+                  s"🤖 AI_BOT: Failed to post response for ${threadId.formatted}: ${error.getMessage}"
+                )
+              }
+          } else {
+            // Already interrupted and logged by monitor
+            ZIO.unit
+          }
+      } yield ()
+    }.forever
+
+  /** Verify if we still hold the latest timestamp for this thread */
+  private def verifyStillLatest(threadId: ThreadId, heldTimestamp: Instant): Task[Boolean] =
+    lastProcessedTimestamp.get.map { timestampMap =>
+      timestampMap.get(threadId) match
+        case Some(latest) => latest.toEpochMilli <= heldTimestamp.toEpochMilli
+        case None         => true // No newer timestamp, we're latest
+    }
+
+  /** Generate LLM response without posting (for continuous monitoring pattern) */
+  private def generateResponse(threadId: ThreadId): Task[String] =
+    for {
+      _ <- ZIO.logInfo(s"🤖 AI_BOT: Generating response for ${threadId.formatted}")
 
       // Get full thread history for context
       thread <- messageStore
-        .retrieveThread(message.threadId)
+        .retrieveThread(threadId)
         .mapError(e => new RuntimeException(s"Failed to retrieve thread: ${e.getMessage}"))
+
+      // Get all messages in thread chronologically
+      threadMessages <- messageStore
+        .streamThread(threadId)
+        .runCollect
+        .mapError(e => new RuntimeException(s"Failed to get thread messages: ${e.getMessage}"))
 
       // Build conversation context
       systemMessage = ChatMessage.system(config.llm.systemPrompt)
-      threadMessages = thread.messages.map { msg =>
+      conversationMessages = threadMessages.map { msg =>
         if msg.source == slacksocket.demo.domain.conversation.MessageSource.Self then
           ChatMessage.assistant(msg.content)
         else ChatMessage.user(msg.content)
-      }
-      allMessages = systemMessage :: threadMessages
+      }.toList
+      allMessages = systemMessage :: conversationMessages
 
       _ <- ZIO.logInfo(
-        s"🤖 AI_BOT: Generating response (${threadMessages.size} messages in context)"
+        s"🤖 AI_BOT: Calling LLM (${conversationMessages.size} messages in context)"
       )
 
       // DIAGNOSTIC: Log conversation being sent to LLM
@@ -135,7 +269,7 @@ class AiBotProcessor(
         ZIO.logInfo(s"🤖 AI_BOT_CTX[$idx]: ${msg.role} - ${msg.content.take(100)}")
       }
 
-      // Call LLM (this can take several seconds)
+      // Call LLM (this can take several seconds - interruptible!)
       response <- llmService
         .chat(
           messages = allMessages,
@@ -151,121 +285,96 @@ class AiBotProcessor(
       _ <- ZIO.when(response.trim.isEmpty) {
         ZIO.fail(new RuntimeException("LLM returned empty response"))
       }
+    } yield response
 
-      // Post response to Slack thread
-      _ <- slackClient
-        .postMessage(
-          channelId = thread.channelId,
-          text = response,
-          threadTs = Some(message.threadId)
-        )
-        .mapError(e => new RuntimeException(s"Slack API error: ${e.getMessage}"))
-
-      // Mark complete with checkmark
-      _ <- removeReaction(message, "robot_face")
-      _ <- addReaction(message, "white_check_mark")
-
-      _ <- ZIO.logInfo(s"🤖 AI_BOT: Completed processing ${message.id.formatted}")
-
-      // Check if there's a waiting message to process next
-      _ <- processNext
-    } yield ()).catchAll { error =>
-      // On error, still mark complete but log the error
-      ZIO.logError(s"🤖 AI_BOT: Processing failed: ${error.getMessage}") *>
-        removeReaction(message, "robot_face") *>
-        addReaction(message, "x") *> // ❌ for errors
-        processNext
-    }
-
-  /** Check state for next message to process */
-  private def processNext: UIO[Unit] =
-    processingState.modify { state =>
-      state.waiting match
-        case None =>
-          // No waiting message - go idle
-          (ZIO.unit, ProcessingState(None, None))
-
-        case Some(nextMessage) =>
-          // Start processing the waiting message
-          val actions =
-            removeReaction(nextMessage, "clock1") *>
-              addReaction(nextMessage, "robot_face") *>
-              processMessage(nextMessage).forkDaemon.unit
-          (actions, ProcessingState(Some(nextMessage), None))
-    }.flatten
-
-  /** Post quick acknowledgment for initial @mentions */
-  private def quickAcknowledge(message: ThreadMessage): Task[Unit] =
+  /** Post response to Slack (extracted for clarity) */
+  private def postResponse(threadId: ThreadId, response: String): Task[Unit] =
     for {
       thread <- messageStore
-        .retrieveThread(message.threadId)
+        .retrieveThread(threadId)
         .mapError(e => new RuntimeException(s"Failed to retrieve thread: ${e.getMessage}"))
 
       _ <- slackClient
         .postMessage(
           channelId = thread.channelId,
-          text = "👋 Got it! Let me think about that...",
-          threadTs = Some(thread.id)
+          text = response,
+          threadTs = Some(threadId)
         )
         .mapError(e => new RuntimeException(s"Slack API error: ${e.getMessage}"))
 
-      _ <- ZIO.logInfo(s"🤖 AI_BOT: Posted acknowledgment")
+      _ <- ZIO.logInfo(s"🤖 AI_BOT: Posted response to ${threadId.formatted}")
     } yield ()
 
-  /** Helper: Add reaction with error handling */
-  private def addReaction(message: ThreadMessage, emoji: String): UIO[Unit] =
-    for {
-      thread <- messageStore
-        .retrieveThread(message.threadId)
-        .orDie // Should never fail - message was just processed
-      _ <- slackClient
-        .addReaction(
-          channel = thread.channelId,
-          timestamp = message.id,
-          name = emoji
-        )
-        .catchAll(err => ZIO.logWarning(s"Failed to add reaction :$emoji:: $err"))
-    } yield ()
+  /** Cleanup fiber: removes idle workers (> 1 hour no activity) */
+  private def cleanupIdleWorkers: Task[Unit] =
+    (for {
+      now <- Clock.instant
+      workers <- threadWorkers.get
 
-  /** Helper: Remove reaction with error handling */
-  private def removeReaction(message: ThreadMessage, emoji: String): UIO[Unit] =
-    for {
-      thread <- messageStore
-        .retrieveThread(message.threadId)
-        .orDie
-      _ <- slackClient
-        .removeReaction(
-          channel = thread.channelId,
-          timestamp = message.id,
-          name = emoji
-        )
-        .catchAll(err => ZIO.logWarning(s"Failed to remove reaction :$emoji:: $err"))
-    } yield ()
+      // Find workers idle for more than 1 hour
+      idleWorkers <- ZIO
+        .foreach(workers.toList) { case (threadId, worker) =>
+          worker.lastActivity.get.map { lastActivity =>
+            val idleDuration = java.time.Duration.between(lastActivity, now)
+            if idleDuration.toHours >= 1 then Some(threadId) else None
+          }
+        }
+        .map(_.flatten)
+
+      // Interrupt and remove idle workers
+      _ <- ZIO.foreach(idleWorkers) { threadId =>
+        workers.get(threadId) match
+          case Some(worker) =>
+            for {
+              _ <- worker.fiber.interrupt
+              _ <- threadWorkers.update(_ - threadId)
+              _ <- lastProcessedTimestamp.update(_ - threadId)
+              _ <- ZIO.logInfo(
+                s"🤖 AI_BOT: Cleaned up idle worker for ${threadId.formatted} (idle > 1 hour)"
+              )
+            } yield ()
+          case None =>
+            ZIO.unit
+      }
+
+      _ <- ZIO.when(idleWorkers.nonEmpty) {
+        ZIO.logInfo(s"🤖 AI_BOT: Cleanup complete - removed ${idleWorkers.size} idle workers")
+      }
+
+      // Sleep 10 minutes before next cleanup
+      _ <- ZIO.sleep(10.minutes)
+    } yield ()).forever
 
 object AiBotProcessor:
 
-  /** Processing state for concurrent message handling.
-    *
-    *   - processing: Message currently being processed (immutable, runs to completion)
-    *   - waiting: Message waiting to be processed (mutable, can be replaced by newer message)
-    */
-  case class ProcessingState(
-      processing: Option[ThreadMessage],
-      waiting: Option[ThreadMessage]
-  )
-
-  /** ZLayer for dependency injection with processing state */
+  /** ZLayer for dependency injection with per-thread queues and workers */
   val layer: ZLayer[
     LLMService & MessageStore & SlackApiClient & AppConfig,
     Nothing,
     AiBotProcessor
   ] =
-    ZLayer.fromZIO {
+    ZLayer.scoped {
       for {
         llm <- ZIO.service[LLMService]
         store <- ZIO.service[MessageStore]
         slack <- ZIO.service[SlackApiClient]
         config <- ZIO.service[AppConfig]
-        state <- Ref.make(ProcessingState(None, None))
-      } yield AiBotProcessor(llm, store, slack, config, state)
+
+        // Map of thread workers (queue + fiber + last activity per thread)
+        workersMap <- Ref.make(Map.empty[ThreadId, ThreadWorker])
+
+        // Track last processed timestamp per thread (for deduplication)
+        timestampMap <- Ref.make(Map.empty[ThreadId, Instant])
+
+        // Create processor
+        processor = AiBotProcessor(llm, store, slack, config, workersMap, timestampMap)
+
+        // Fork cleanup fiber in background (will be interrupted when scope closes)
+        // Runs every 10 minutes to remove workers idle > 1 hour
+        _ <- processor.cleanupIdleWorkers.forkScoped
+
+        _ <- ZIO.logInfo(
+          "🤖 AI_BOT: Processor initialized with per-thread queues (workers auto-cleanup after 1hr idle)"
+        )
+      } yield processor
     }

@@ -128,14 +128,13 @@ object MessageStore:
 
     def storeThread(thread: Thread): IO[Error, ThreadId] =
       for {
-        // Store the thread
+        // Store the thread metadata (root message is already stored separately when thread created)
         _ <- threads.update(_ + (thread.id -> thread))
-        // Store all messages in the thread
-        _ <- ZIO.foreachDiscard(thread.messages)(msg => messages.update(_ + (msg.id -> msg)))
         _ <- ZIO.logInfo(
-          s"Stored thread: ${thread.id.formatted} with ${thread.messages.size} messages"
+          s"Stored thread: ${thread.id.formatted}"
         )
         // Phase 7a: Publish ThreadCreated event (Option 2 pattern)
+        // Hub stays DUMB - publishes ALL events, processor filters
         _ <- eventBus.publish(MessageEventBus.ThreadCreated(thread, Instant.now))
       } yield thread.id
 
@@ -145,24 +144,11 @@ object MessageStore:
     def retrieveThread(threadId: ThreadId): IO[Error, Thread] =
       for {
         threadsMap <- threads.get
-        messagesMap <- messages.get
-
-        // Get the base thread
-        baseThread <- ZIO
+        // Just return the thread metadata - messages are queried separately
+        thread <- ZIO
           .fromOption(threadsMap.get(threadId))
           .orElseFail(Error.NotFound(s"Thread(${threadId.value})"))
-
-        // Get all messages for this thread (excluding root message which is already in thread)
-        threadMessages = messagesMap.values
-          .filter(msg => msg.threadId == threadId && msg.id != baseThread.rootMessage.id)
-          .toList
-          .sortBy(_.createdAt) // Sort by creation time
-
-        // Rebuild thread with all messages
-        fullThread = threadMessages.foldLeft(baseThread) { (thread, msg) =>
-          thread.addMessage(msg)
-        }
-      } yield fullThread
+      } yield thread
 
     def retrieveByTimeRange(
         start: Instant,
@@ -181,14 +167,15 @@ object MessageStore:
 
     def streamThread(threadId: ThreadId): ZStream[Any, Error, ThreadMessage] =
       ZStream.unwrap {
-        retrieveThread(threadId)
-          .map { thread =>
-            ZStream.fromIterable(thread.messages)
-          }
-          .catchAll { error =>
-            // Convert retrieval error to empty stream for missing threads
-            ZIO.succeed(ZStream.empty)
-          }
+        messages.get.map { msgsMap =>
+          val threadMsgs = msgsMap.values
+            .filter(_.threadId == threadId)
+            .toList
+            .sortBy(
+              _.slackCreatedAt.map(_.toEpochMilli).getOrElse(0L)
+            ) // Chronological order by Slack timestamp
+          ZStream.fromIterable(threadMsgs)
+        }
       }
 
     def searchMessages(query: MessageQuery): ZStream[Any, Error, ThreadMessage] =

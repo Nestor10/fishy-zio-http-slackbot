@@ -34,12 +34,77 @@ object MessageProcessorService:
 
     // Phase 7b: Simplified to only depend on MessageStore (Option 2 pattern)
     // MessageStore now handles event publishing
-    case class Live(messageStore: MessageStore, botIdentityService: BotIdentityService)
-        extends MessageProcessorService {
+    // Phase 10: Added SlackApiClient for thread recovery
+    case class Live(
+        messageStore: MessageStore,
+        botIdentityService: BotIdentityService,
+        slackApiClient: SlackApiClient
+    ) extends MessageProcessorService {
+
+      /** Recover a thread from Slack's conversation history.
+        *
+        * This is used when the bot restarts and encounters a thread reply for a thread not in
+        * memory. We fetch the full thread history from Slack, verify it was created by an
+        * @mention,
+        *   rebuild the Thread domain object, and store it along with all messages.
+        *
+        * @param channelId
+        *   The channel where the thread exists
+        * @param threadId
+        *   The thread timestamp
+        * @return
+        *   The recovered Thread, or fails if API call fails or thread invalid
+        */
+      private def recoverThreadFromSlack(
+          channelId: ChannelId,
+          threadId: ThreadId
+      ): IO[Throwable, Thread] =
+        for {
+          _ <- ZIO.logInfo(
+            s"🔄 THREAD_RECOVERY: Fetching thread ${threadId.formatted} from Slack API"
+          )
+          botIdentity <- botIdentityService.getBotIdentity.orDie
+          response <- slackApiClient
+            .getConversationReplies(channelId, threadId)
+            .mapError(err => new RuntimeException(s"Slack API error: ${err.getMessage}"))
+          slackMessages <- ZIO
+            .fromOption(response.messages)
+            .orElseFail(new RuntimeException("No messages in thread"))
+          threadAndMessages <- ZIO
+            .fromOption(
+              Thread.fromSlackMessages(
+                slackMessages,
+                botIdentity.userId.value,
+                channelId,
+                botIdentity
+              )
+            )
+            .orElseFail(
+              new RuntimeException(
+                "Thread recovery failed: first message doesn't mention bot"
+              )
+            )
+          (thread, messages) = threadAndMessages
+          // Store the thread metadata
+          _ <- messageStore
+            .storeThread(thread)
+            .mapError(err => new RuntimeException(s"Storage error: ${err.getMessage}"))
+          // Store each individual message
+          _ <- ZIO.foreach(messages) { msg =>
+            messageStore
+              .store(msg)
+              .mapError(err => new RuntimeException(s"Failed to store message: ${err.getMessage}"))
+          }
+          _ <- ZIO.logInfo(
+            s"✅ THREAD_RECOVERED: id=${threadId.formatted} with ${messages.size} messages from Slack"
+          )
+        } yield thread
 
       /** Helper to handle thread reply storage for any channel type. The channel_type
         * (channel/im/group/mpim) is Slack transport detail - our domain model doesn't care about it
         * since storage logic is identical.
+        *
+        * Phase 10: Now attempts thread recovery from Slack if thread not found in memory.
         */
       private def handleThreadReply(
           message: Message,
@@ -49,32 +114,51 @@ object MessageProcessorService:
         message.thread_ts match {
           case Some(threadTsDouble) =>
             val threadId = ThreadId(threadTsDouble)
-            // Check if we have this thread stored
-            messageStore
-              .retrieveThread(threadId)
-              .flatMap { thread =>
-                // We have the thread! Create and store the message
-                val botIdentity = thread.botIdentity
-                val threadMessage =
-                  ThreadMessage.fromSlackMessage(message, threadId, botIdentity)
+            val channelId = ChannelId(message.channel)
 
-                messageStore
-                  .store(threadMessage)
-                  .flatMap { msgId =>
-                    ZIO.logInfo(
-                      s"💾 THREAD_REPLY_STORED: thread=${threadId.formatted} message=${msgId.formatted} author=${threadMessage.author.value} channel_type=$channelType"
+            // Try to retrieve thread, with recovery fallback
+            for {
+              threadOpt <- messageStore.retrieveThread(threadId).option
+              thread <- threadOpt match {
+                case Some(t) =>
+                  // Fast path: Thread already in memory
+                  ZIO.succeed(Some(t))
+                case None =>
+                  // Slow path: Thread not in memory, try to recover from Slack
+                  ZIO.logInfo(
+                    s"🔍 THREAD_NOT_IN_MEMORY: Attempting recovery for ${threadId.formatted}"
+                  ) *>
+                    recoverThreadFromSlack(channelId, threadId)
+                      .tapError(err =>
+                        ZIO.logWarning(
+                          s"⚠️ THREAD_RECOVERY_FAILED: ${err.getMessage} - skipping message"
+                        )
+                      )
+                      .option // Convert failure to None
+              }
+              _ <- thread match {
+                case Some(t) =>
+                  // We have the thread! Create and store the message
+                  val botIdentity = t.botIdentity
+                  val threadMessage =
+                    ThreadMessage.fromSlackMessage(message, threadId, botIdentity)
+
+                  messageStore
+                    .store(threadMessage)
+                    .flatMap { msgId =>
+                      ZIO.logInfo(
+                        s"💾 THREAD_REPLY_STORED: thread=${threadId.formatted} message=${msgId.formatted} author=${threadMessage.author.value} channel_type=$channelType"
+                      )
+                    }
+                    .tapError(error =>
+                      ZIO.logError(s"❌ FAILED_TO_STORE_REPLY: ${error.getMessage}")
                     )
-                    // Phase 7b: MessageStore now publishes MessageStored event (Option 2)
-                  }
-                  .tapError(error => ZIO.logError(s"❌ FAILED_TO_STORE_REPLY: ${error.getMessage}"))
-                  .catchAll(_ => ZIO.unit) // Continue even if storage fails
+                    .catchAll(_ => ZIO.unit) // Continue even if storage fails
+                case None =>
+                  // Recovery failed, skip this message
+                  ZIO.unit
               }
-              .catchAll { error =>
-                // Thread not found - this is expected for non-bot threads
-                ZIO.logDebug(
-                  s"🔍 THREAD_NOT_TRACKED: thread=${threadId.formatted} (not a bot thread)"
-                )
-              }
+            } yield ()
           case None =>
             // Not a thread reply, just a regular message
             ZIO.unit
@@ -123,7 +207,7 @@ object MessageProcessorService:
                             .catchAll(_ => ZIO.unit) // Log error but don't fail message processing
                           *>
                           ZIO.logInfo(
-                            s"💾 THREAD_STORED: id=${thread.id.formatted} messages=${thread.messages.size}"
+                            s"💾 THREAD_STORED: id=${thread.id.formatted}"
                           ) *>
                           // Phase 7b: MessageStore now publishes ThreadCreated event (Option 2)
                           // Verify storage by retrieving what we just stored
@@ -131,7 +215,7 @@ object MessageProcessorService:
                             .retrieveThread(thread.id)
                             .flatMap { retrievedThread =>
                               ZIO.logInfo(
-                                s"✅ STORAGE_VERIFIED: Retrieved thread ${retrievedThread.id.formatted} with ${retrievedThread.messages.size} messages"
+                                s"✅ STORAGE_VERIFIED: Retrieved thread ${retrievedThread.id.formatted}"
                               )
                             }
                             .tapError(error =>
@@ -244,12 +328,18 @@ object MessageProcessorService:
 
     // Phase 7b: Simplified layer to only depend on MessageStore (Option 2 pattern)
     // Phase 8: Added BotIdentityService dependency for real bot user ID
-    val layer: ZLayer[MessageStore & BotIdentityService, Nothing, MessageProcessorService] =
+    // Phase 10: Added SlackApiClient for thread recovery
+    val layer: ZLayer[
+      MessageStore & BotIdentityService & SlackApiClient,
+      Nothing,
+      MessageProcessorService
+    ] =
       ZLayer.fromZIO {
         for {
           store <- ZIO.service[MessageStore]
           botIdentity <- ZIO.service[BotIdentityService]
-        } yield Live(store, botIdentity)
+          slackApi <- ZIO.service[SlackApiClient]
+        } yield Live(store, botIdentity, slackApi)
       }
 
   object Stub:
