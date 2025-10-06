@@ -1,4 +1,4 @@
-package com.nestor10.slackbot.processor
+package com.nestor10.slackbot.domain.processor
 
 import zio.*
 import zio.telemetry.opentelemetry.tracing.Tracing
@@ -75,7 +75,7 @@ class AiBotProcessor(
     tracing: Tracing,
     threadWorkers: Ref[Map[ThreadId, ThreadWorker]], // Per-thread queue + worker + activity
     lastProcessedTimestamp: Ref[Map[ThreadId, Instant]] // Track last timestamp per thread
-) extends MessageProcessor:
+) extends EventProcessor:
 
   import AiBotProcessor.*
 
@@ -88,7 +88,7 @@ class AiBotProcessor(
       message.source != MessageSource.Self
     case _ => false
 
-  override def process(event: MessageEvent): IO[MessageProcessor.Error, Unit] =
+  override def process(event: MessageEvent): IO[EventProcessor.Error, Unit] =
     // Extract threadId and timestamp from event
     val (threadId, timestampOpt) = event match
       case MessageEvent.ThreadCreated(thread, _) =>
@@ -126,7 +126,7 @@ class AiBotProcessor(
                 )
               } yield ()
         }
-    ).mapError(e => MessageProcessor.Error.ProcessingFailed(e, name)).as(())
+    ).mapError(e => EventProcessor.Error.ProcessingFailed(e, name)).as(())
 
   /** Get existing worker for thread, or create new one if doesn't exist */
   private def getOrCreateWorker(threadId: ThreadId): Task[ThreadWorker] =

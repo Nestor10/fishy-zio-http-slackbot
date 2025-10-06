@@ -1,4 +1,4 @@
-package com.nestor10.slackbot.processor
+package com.nestor10.slackbot.domain.processor
 
 import zio.*
 import com.nestor10.slackbot.domain.service.MessageEventBus.MessageEvent
@@ -14,7 +14,7 @@ import com.nestor10.slackbot.domain.service.MessageEventBus.MessageEvent
   * Zionomicon References:
   *   - Chapter 17: Dependency Injection (ZLayer pattern)
   */
-class NotificationProcessor extends MessageProcessor:
+class NotificationProcessor extends EventProcessor:
 
   override val name: String = "NotificationProcessor"
 
@@ -22,7 +22,7 @@ class NotificationProcessor extends MessageProcessor:
     case _: MessageEvent.ThreadCreated => true // Notify on new threads
     case _                             => false
 
-  override def process(event: MessageEvent): IO[MessageProcessor.Error, Unit] =
+  override def process(event: MessageEvent): IO[EventProcessor.Error, Unit] =
     event match
       case MessageEvent.ThreadCreated(thread, timestamp) =>
         ZIO.logInfo(

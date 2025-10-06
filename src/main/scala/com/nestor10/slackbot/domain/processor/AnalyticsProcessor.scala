@@ -1,4 +1,4 @@
-package com.nestor10.slackbot.processor
+package com.nestor10.slackbot.domain.processor
 
 import zio.*
 import com.nestor10.slackbot.domain.service.MessageEventBus.MessageEvent
@@ -22,13 +22,13 @@ class AnalyticsProcessor(
     messagesStored: Ref[Long],
     threadsUpdated: Ref[Long],
     messagesUpdated: Ref[Long]
-) extends MessageProcessor:
+) extends EventProcessor:
 
   override val name: String = "AnalyticsProcessor"
 
   override def canProcess(event: MessageEvent): Boolean = true // Track all events
 
-  override def process(event: MessageEvent): IO[MessageProcessor.Error, Unit] =
+  override def process(event: MessageEvent): IO[EventProcessor.Error, Unit] =
     event match
       case MessageEvent.ThreadCreated(thread, _) =>
         threadsCreated.update(_ + 1) *>

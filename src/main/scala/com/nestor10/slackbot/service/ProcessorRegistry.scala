@@ -1,10 +1,10 @@
 package com.nestor10.slackbot.service
 
 import zio.*
-import com.nestor10.slackbot.processor.MessageProcessor
+import com.nestor10.slackbot.domain.processor.EventProcessor
 import com.nestor10.slackbot.domain.service.MessageEventBus
 
-/** Registry for managing message processors and distributing events. \```
+/** Registry for managing message processors and distributing events.
   *
   * The ProcessorRegistry maintains a set of registered processors and runs a worker fiber that
   * subscribes to the MessageEventBus. When events arrive, they are distributed to all processors
@@ -18,13 +18,13 @@ import com.nestor10.slackbot.domain.service.MessageEventBus
   */
 trait ProcessorRegistry:
   /** Register a new processor */
-  def register(processor: MessageProcessor): UIO[Unit]
+  def register(processor: EventProcessor): UIO[Unit]
 
   /** Unregister a processor by name */
   def unregister(name: String): UIO[Unit]
 
   /** Get all currently registered processors */
-  def getProcessors: UIO[Set[MessageProcessor]]
+  def getProcessors: UIO[Set[EventProcessor]]
 
   /** Start the worker fiber that processes events */
   def startProcessing: IO[Nothing, Fiber.Runtime[Nothing, Unit]]
@@ -34,11 +34,11 @@ object ProcessorRegistry:
   object Live:
 
     case class Live(
-        processors: Ref[Set[MessageProcessor]],
+        processors: Ref[Set[EventProcessor]],
         eventBus: MessageEventBus
     ) extends ProcessorRegistry:
 
-      override def register(processor: MessageProcessor): UIO[Unit] =
+      override def register(processor: EventProcessor): UIO[Unit] =
         processors.update(_ + processor) *>
           ZIO.logInfo(s"✅ PROCESSOR_REGISTERED: ${processor.name}")
 
@@ -46,7 +46,7 @@ object ProcessorRegistry:
         processors.update(_.filterNot(_.name == name)) *>
           ZIO.logInfo(s"❌ PROCESSOR_UNREGISTERED: $name")
 
-      override def getProcessors: UIO[Set[MessageProcessor]] =
+      override def getProcessors: UIO[Set[EventProcessor]] =
         processors.get
 
       override def startProcessing: IO[Nothing, Fiber.Runtime[Nothing, Unit]] =
@@ -99,19 +99,19 @@ object ProcessorRegistry:
       ZLayer.fromZIO {
         for {
           bus <- ZIO.service[MessageEventBus]
-          ref <- Ref.make(Set.empty[MessageProcessor])
+          ref <- Ref.make(Set.empty[EventProcessor])
         } yield Live(ref, bus)
       }
 
   // Accessor methods (Chapter 19: Contextual Data Types)
 
-  def register(processor: MessageProcessor): URIO[ProcessorRegistry, Unit] =
+  def register(processor: EventProcessor): URIO[ProcessorRegistry, Unit] =
     ZIO.serviceWithZIO[ProcessorRegistry](_.register(processor))
 
   def unregister(name: String): URIO[ProcessorRegistry, Unit] =
     ZIO.serviceWithZIO[ProcessorRegistry](_.unregister(name))
 
-  def getProcessors: URIO[ProcessorRegistry, Set[MessageProcessor]] =
+  def getProcessors: URIO[ProcessorRegistry, Set[EventProcessor]] =
     ZIO.serviceWithZIO[ProcessorRegistry](_.getProcessors)
 
   def startProcessing: URIO[ProcessorRegistry, Fiber.Runtime[Nothing, Unit]] =

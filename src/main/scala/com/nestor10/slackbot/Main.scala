@@ -12,7 +12,11 @@ import com.nestor10.slackbot.service.{
   ProcessorRegistry,
   LLMService
 }
-import com.nestor10.slackbot.processor.{AiBotProcessor, AnalyticsProcessor, NotificationProcessor}
+import com.nestor10.slackbot.domain.processor.{
+  AiBotProcessor,
+  AnalyticsProcessor,
+  NotificationProcessor
+}
 import com.nestor10.slackbot.otel.{OpenTelemetrySetup, StorageMetrics, SocketMetrics}
 import com.nestor10.slackbot.domain.model.socket.{SocketId, InboundQueue}
 import com.nestor10.slackbot.domain.model.slack.{
