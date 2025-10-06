@@ -1,4 +1,4 @@
-package com.nestor10.slackbot.otel
+package com.nestor10.slackbot.infrastructure.observability
 
 import zio.*
 import zio.telemetry.opentelemetry.OpenTelemetry

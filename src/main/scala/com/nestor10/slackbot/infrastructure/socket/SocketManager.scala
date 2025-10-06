@@ -7,7 +7,7 @@ import com.nestor10.slackbot.conf.AppConfig
 import com.nestor10.slackbot.infrastructure.slack.SlackApiClient
 import com.nestor10.slackbot.domain.model.socket.{SocketId, SocketConnectionState, InboundQueue}
 import com.nestor10.slackbot.domain.model.slack.BusinessMessage
-import com.nestor10.slackbot.otel.SocketMetrics
+import com.nestor10.slackbot.infrastructure.observability.SocketMetrics
 import java.util.concurrent.TimeUnit
 
 trait SocketManager:
