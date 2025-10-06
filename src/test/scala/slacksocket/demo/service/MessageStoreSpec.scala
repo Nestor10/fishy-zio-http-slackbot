@@ -1,9 +1,9 @@
-package slacksocket.demo.service
+package com.nestor10.slackbot.service
 
 import zio.*
 import zio.test.*
 import zio.test.Assertion.*
-import slacksocket.demo.domain.conversation.*
+import com.nestor10.slackbot.domain.conversation.*
 import java.time.Instant
 
 /** ZIO Test spec for MessageStore - Zionomicon Chapter 2 patterns */

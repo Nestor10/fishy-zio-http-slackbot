@@ -17,14 +17,15 @@ lazy val root = project
   .settings(
     name := "fishy-zio-http-socket",
     version := "0.1.0-SNAPSHOT",
+    organization := "com.nestor10",
 
   scalaVersion := scala3Version,
   // Format code on compile (scalafmt)
   ThisBuild / scalafmtOnCompile := true,
   // Enable semanticdb (Scala 3 provides it; flag kept if supported, harmless if ignored)
   ThisBuild / scalacOptions += "-Ysemanticdb",
-  // Explicit main class (used by run & reStart)
-  Compile / mainClass := Some("slacksocket.demo.SlackSocketDemoApp"),
+  // Explicit main class (uses new package structure)
+  Compile / mainClass := Some("com.nestor10.slackbot.Main"),
   // Use ZIO Test framework for running tests
   testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
 
