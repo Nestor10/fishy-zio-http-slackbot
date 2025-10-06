@@ -1,5 +1,14 @@
-package com.nestor10.slackbot.domain.conversation
+package com.nestor10.slackbot.domain.event
 
+import com.nestor10.slackbot.domain.model.conversation.{
+  ThreadId,
+  ChannelId,
+  ThreadMessage,
+  ThreadState,
+  MessageId,
+  BotIdentity,
+  UserId
+}
 import zio.json.*
 import java.time.Instant
 

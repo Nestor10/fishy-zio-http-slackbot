@@ -2,8 +2,9 @@ package com.nestor10.slackbot.service
 
 import zio.*
 import zio.stream.*
-import com.nestor10.slackbot.domain.conversation.{Thread, ThreadMessage, ThreadId, MessageId}
-import com.nestor10.slackbot.domain.storage.MessageQuery
+import com.nestor10.slackbot.domain.model.conversation.{Thread, ThreadMessage, ThreadId, MessageId}
+import com.nestor10.slackbot.domain.model.storage.MessageQuery
+import com.nestor10.slackbot.domain.service.MessageEventBus
 import java.time.Instant
 
 /** Service for persistent storage and retrieval of Thread and ThreadMessage domain objects.

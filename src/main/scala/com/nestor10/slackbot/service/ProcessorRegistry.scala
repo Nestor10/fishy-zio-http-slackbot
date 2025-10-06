@@ -2,8 +2,9 @@ package com.nestor10.slackbot.service
 
 import zio.*
 import com.nestor10.slackbot.processor.MessageProcessor
+import com.nestor10.slackbot.domain.service.MessageEventBus
 
-/** Registry for managing message processors and distributing events.
+/** Registry for managing message processors and distributing events. \```
   *
   * The ProcessorRegistry maintains a set of registered processors and runs a worker fiber that
   * subscribes to the MessageEventBus. When events arrive, they are distributed to all processors

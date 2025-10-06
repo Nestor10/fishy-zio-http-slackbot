@@ -5,7 +5,7 @@ import zio.http._
 import zio.json._
 import zio.telemetry.opentelemetry.tracing.Tracing
 import com.nestor10.slackbot.conf.AppConfig
-import com.nestor10.slackbot.domain.conversation.{ChannelId, ThreadId, MessageId}
+import com.nestor10.slackbot.domain.model.conversation.{ChannelId, ThreadId, MessageId}
 
 /** Slack API client with just enough to open a Socket Mode connection via apps.connections.open */
 trait SlackApiClient {

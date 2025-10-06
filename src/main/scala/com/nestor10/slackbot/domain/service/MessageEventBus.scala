@@ -1,8 +1,8 @@
-package com.nestor10.slackbot.service
+package com.nestor10.slackbot.domain.service
 
 import zio.*
 import zio.stream.*
-import com.nestor10.slackbot.domain.conversation.{Thread, ThreadMessage, MessageId}
+import com.nestor10.slackbot.domain.model.conversation.{Thread, ThreadMessage, MessageId}
 import java.time.Instant
 
 /** Event-driven notification system for message and thread changes.

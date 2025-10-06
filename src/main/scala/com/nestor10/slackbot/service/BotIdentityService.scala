@@ -1,7 +1,7 @@
 package com.nestor10.slackbot.service
 
 import zio.*
-import com.nestor10.slackbot.domain.conversation.{BotIdentity, UserId}
+import com.nestor10.slackbot.domain.model.conversation.{BotIdentity, UserId}
 
 /** Service for managing bot's own identity.
   *

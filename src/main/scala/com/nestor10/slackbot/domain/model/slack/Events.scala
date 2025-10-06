@@ -1,4 +1,4 @@
-package com.nestor10.slackbot.domain.slack
+package com.nestor10.slackbot.domain.model.slack
 
 import zio.json.*
 

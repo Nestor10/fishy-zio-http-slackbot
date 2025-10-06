@@ -1,8 +1,8 @@
 package com.nestor10.slackbot.service
 
 import zio.*
-import com.nestor10.slackbot.domain.socket.InboundQueue
-import com.nestor10.slackbot.domain.slack.{
+import com.nestor10.slackbot.domain.model.socket.InboundQueue
+import com.nestor10.slackbot.domain.model.slack.{
   BusinessMessage,
   EventsApiMessage,
   InteractiveMessage,
@@ -15,7 +15,7 @@ import com.nestor10.slackbot.domain.slack.{
   AppHomeOpened,
   UnknownEvent
 }
-import com.nestor10.slackbot.domain.conversation.{
+import com.nestor10.slackbot.domain.model.conversation.{
   Thread,
   ThreadMessage,
   ThreadId,

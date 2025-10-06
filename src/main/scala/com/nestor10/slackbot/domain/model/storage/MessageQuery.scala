@@ -1,7 +1,7 @@
-package com.nestor10.slackbot.domain.storage
+package com.nestor10.slackbot.domain.model.storage
 
 import zio.json.*
-import com.nestor10.slackbot.domain.conversation.{ThreadId, UserId, ChannelId}
+import com.nestor10.slackbot.domain.model.conversation.{ThreadId, UserId, ChannelId}
 import java.time.Instant
 
 /** Query parameters for searching messages in the MessageStore. */

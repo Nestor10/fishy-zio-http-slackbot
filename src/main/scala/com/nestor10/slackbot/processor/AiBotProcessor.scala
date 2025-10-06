@@ -2,12 +2,18 @@ package com.nestor10.slackbot.processor
 
 import zio.*
 import zio.telemetry.opentelemetry.tracing.Tracing
-import com.nestor10.slackbot.service.{MessageEventBus, MessageStore, LLMService, SlackApiClient}
-import com.nestor10.slackbot.service.MessageEventBus.MessageEvent
-import com.nestor10.slackbot.domain.llm.{ChatMessage, ChatRole}
-import com.nestor10.slackbot.domain.conversation.{ThreadMessage, ChannelId, MessageId, ThreadId}
+import com.nestor10.slackbot.service.{MessageStore, LLMService, SlackApiClient}
+import com.nestor10.slackbot.domain.service.MessageEventBus
+import com.nestor10.slackbot.domain.service.MessageEventBus.MessageEvent
+import com.nestor10.slackbot.domain.model.llm.{ChatMessage, ChatRole}
+import com.nestor10.slackbot.domain.model.conversation.{
+  ThreadMessage,
+  ChannelId,
+  MessageId,
+  ThreadId
+}
 import com.nestor10.slackbot.conf.AppConfig
-import com.nestor10.slackbot.domain.conversation.MessageSource
+import com.nestor10.slackbot.domain.model.conversation.MessageSource
 import java.time.Instant
 
 /** Per-thread worker: queue, fiber, and activity tracking */

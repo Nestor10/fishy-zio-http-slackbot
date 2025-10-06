@@ -4,8 +4,8 @@ import zio.*
 import zio.http.*
 import zio.json.*
 import com.nestor10.slackbot.conf.AppConfig
-import com.nestor10.slackbot.domain.socket.{SocketId, SocketConnectionState, InboundQueue}
-import com.nestor10.slackbot.domain.slack.BusinessMessage
+import com.nestor10.slackbot.domain.model.socket.{SocketId, SocketConnectionState, InboundQueue}
+import com.nestor10.slackbot.domain.model.slack.BusinessMessage
 import com.nestor10.slackbot.otel.SocketMetrics
 import java.util.concurrent.TimeUnit
 

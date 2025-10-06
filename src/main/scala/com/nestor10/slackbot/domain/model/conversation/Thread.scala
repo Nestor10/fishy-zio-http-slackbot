@@ -1,8 +1,8 @@
-package com.nestor10.slackbot.domain.conversation
+package com.nestor10.slackbot.domain.model.conversation
 
 import zio.json.*
 import java.time.Instant
-import com.nestor10.slackbot.domain.slack.*
+import com.nestor10.slackbot.domain.model.slack.*
 import com.nestor10.slackbot.service.SlackApiClient.ConversationMessage
 
 // Core identifiers

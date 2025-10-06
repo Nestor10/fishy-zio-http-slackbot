@@ -1,9 +1,9 @@
-package com.nestor10.slackbot.domain.socket
+package com.nestor10.slackbot.domain.model.socket
 
 import zio.json.*
 import zio.Queue
 import java.time.{Instant, Duration}
-import com.nestor10.slackbot.domain.slack.BusinessMessage
+import com.nestor10.slackbot.domain.model.slack.BusinessMessage
 
 // Business message queue type for socket communication
 type InboundQueue = Queue[BusinessMessage]

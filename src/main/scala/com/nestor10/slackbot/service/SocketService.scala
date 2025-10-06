@@ -6,9 +6,9 @@ import zio.http._
 import zio.json._
 import com.nestor10.slackbot.conf.AppConfig
 import com.nestor10.slackbot.service.SlackApiClient
-import com.nestor10.slackbot.domain.socket.{SocketId, SocketConnectionState, InboundQueue}
-import com.nestor10.slackbot.domain.slack.BusinessMessage
-import com.nestor10.slackbot.domain.slack.{
+import com.nestor10.slackbot.domain.model.socket.{SocketId, SocketConnectionState, InboundQueue}
+import com.nestor10.slackbot.domain.model.slack.BusinessMessage
+import com.nestor10.slackbot.domain.model.slack.{
   SlackSocketMessage,
   EventsApiMessage,
   AckResponse,
