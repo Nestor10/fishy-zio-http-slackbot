@@ -15,7 +15,8 @@ import com.nestor10.slackbot.domain.processor.{
 import com.nestor10.slackbot.infrastructure.observability.{
   OpenTelemetrySetup,
   StorageMetrics,
-  SocketMetrics
+  SocketMetrics,
+  LLMMetrics
 }
 import com.nestor10.slackbot.domain.model.socket.{SocketId, InboundQueue}
 import com.nestor10.slackbot.domain.model.slack.{
@@ -137,6 +138,7 @@ object Main extends ZIOAppDefault {
             SlackEventOrchestrator.Live.layer, // Phase 4/7b/8: Orchestrator (depends on MessageStore + BotIdentityService)
             ProcessorRegistry.Live.layer, // Phase 3: Processor registry
             LLMService.configured, // Phase 6: LLM service (dynamic: Ollama or OpenAI based on config)
+            LLMMetrics.Live.layer, // Phase 13: LLM metrics (requests, interruptions, latency, workers)
             AiBotProcessor.layer, // Phase 3/6b: AI bot with LLM integration
             AnalyticsProcessor.layer,
             NotificationProcessor.layer

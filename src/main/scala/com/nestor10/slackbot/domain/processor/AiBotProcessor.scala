@@ -5,6 +5,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import com.nestor10.slackbot.infrastructure.storage.MessageStore
 import com.nestor10.slackbot.infrastructure.llm.LLMService
 import com.nestor10.slackbot.infrastructure.slack.SlackApiClient
+import com.nestor10.slackbot.infrastructure.observability.LLMMetrics
 import com.nestor10.slackbot.domain.service.MessageEventBus
 import com.nestor10.slackbot.domain.service.MessageEventBus.MessageEvent
 import com.nestor10.slackbot.domain.model.llm.{ChatMessage, ChatRole}
@@ -75,6 +76,7 @@ class AiBotProcessor(
     slackClient: SlackApiClient,
     config: AppConfig,
     tracing: Tracing,
+    llmMetrics: LLMMetrics,
     threadWorkers: Ref[Map[ThreadId, ThreadWorker]], // Per-thread queue + worker + activity
     lastProcessedTimestamp: Ref[Map[ThreadId, Instant]] // Track last timestamp per thread
 ) extends EventProcessor:
@@ -154,6 +156,10 @@ class AiBotProcessor(
             // Add to map
             _ <- threadWorkers.update(_ + (threadId -> worker))
 
+            // Update active workers gauge (Phase 13)
+            workersCount <- threadWorkers.get.map(_.size)
+            _ <- llmMetrics.setActiveWorkers(workersCount)
+
             _ <- ZIO.logInfo(
               s"🤖 AI_BOT: Created new worker for ${threadId.formatted}"
             )
@@ -187,6 +193,7 @@ class AiBotProcessor(
           case false =>
             // Superseded - interrupt LLM and return false
             llmFiber.interrupt *>
+              llmMetrics.recordInterruption("superseded_by_newer_message") *>
               tracing.addEvent("llm_interrupted") *>
               tracing.setAttribute("llm.interrupted_reason", "superseded_by_newer_message") *>
               ZIO.logInfo(
@@ -219,6 +226,7 @@ class AiBotProcessor(
         shouldPost <- monitorLoop(llmFiber, threadId, timestamp).catchAll { error =>
           // If monitor fails, interrupt LLM and don't post
           llmFiber.interrupt *>
+            llmMetrics.recordInterruption("monitor_error") *>
             ZIO.logInfo(
               s"🤖 AI_BOT: Monitor failed for ${threadId.formatted}: ${error.getMessage}"
             ) *>
@@ -309,6 +317,17 @@ class AiBotProcessor(
 
       endTime <- Clock.currentTime(java.util.concurrent.TimeUnit.MILLISECONDS)
       latency = endTime - startTime
+      latencySeconds = latency.toDouble / 1000.0
+
+      // Record metrics (Phase 13) - infer provider from baseUrl
+      provider =
+        if config.llm.baseUrl.contains("openai") then "openai"
+        else if config.llm.baseUrl.contains("anthropic") then "anthropic"
+        else if config.llm.baseUrl.contains("azure") then "azure"
+        else "ollama"
+
+      _ <- llmMetrics.recordRequest(provider, config.llm.model)
+      _ <- llmMetrics.recordLatency(provider, config.llm.model, latencySeconds)
 
       _ <- tracing.setAttribute("llm.latency_ms", latency.toString)
       _ <- tracing.setAttribute("llm.response_length", response.length.toString)
@@ -380,8 +399,15 @@ class AiBotProcessor(
             ZIO.unit
       }
 
+      // Update active workers gauge after cleanup (Phase 13)
       _ <- ZIO.when(idleWorkers.nonEmpty) {
-        ZIO.logInfo(s"🤖 AI_BOT: Cleanup complete - removed ${idleWorkers.size} idle workers")
+        for {
+          workersCount <- threadWorkers.get.map(_.size)
+          _ <- llmMetrics.setActiveWorkers(workersCount)
+          _ <- ZIO.logInfo(
+            s"🤖 AI_BOT: Cleanup complete - removed ${idleWorkers.size} idle workers"
+          )
+        } yield ()
       }
 
       // Sleep 10 minutes before next cleanup
@@ -392,7 +418,7 @@ object AiBotProcessor:
 
   /** ZLayer for dependency injection with per-thread queues and workers */
   val layer: ZLayer[
-    LLMService & MessageStore & SlackApiClient & AppConfig & Tracing,
+    LLMService & MessageStore & SlackApiClient & AppConfig & Tracing & LLMMetrics,
     Nothing,
     AiBotProcessor
   ] =
@@ -403,6 +429,7 @@ object AiBotProcessor:
         slack <- ZIO.service[SlackApiClient]
         config <- ZIO.service[AppConfig]
         tracing <- ZIO.service[Tracing]
+        metrics <- ZIO.service[LLMMetrics]
 
         // Map of thread workers (queue + fiber + last activity per thread)
         workersMap <- Ref.make(Map.empty[ThreadId, ThreadWorker])
@@ -411,7 +438,16 @@ object AiBotProcessor:
         timestampMap <- Ref.make(Map.empty[ThreadId, Instant])
 
         // Create processor
-        processor = AiBotProcessor(llm, store, slack, config, tracing, workersMap, timestampMap)
+        processor = AiBotProcessor(
+          llm,
+          store,
+          slack,
+          config,
+          tracing,
+          metrics,
+          workersMap,
+          timestampMap
+        )
 
         // Fork cleanup fiber in background (will be interrupted when scope closes)
         // Runs every 10 minutes to remove workers idle > 1 hour
