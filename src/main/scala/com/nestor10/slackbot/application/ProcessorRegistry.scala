@@ -1,9 +1,9 @@
 package com.nestor10.slackbot.application
 
-import zio.*
 import com.nestor10.slackbot.domain.processor.EventProcessor
 import com.nestor10.slackbot.domain.service.MessageEventBus
 import com.nestor10.slackbot.infrastructure.observability.LogContext
+import zio.*
 
 /** Registry for managing message processors and distributing events.
   *

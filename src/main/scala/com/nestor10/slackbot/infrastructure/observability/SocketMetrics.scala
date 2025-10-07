@@ -1,10 +1,11 @@
 package com.nestor10.slackbot.infrastructure.observability
 
-import zio.*
-import zio.stream.*
-import zio.metrics.*
+import com.nestor10.slackbot.domain.model.socket.{SocketConnectionState, SocketStatus}
 import com.nestor10.slackbot.infrastructure.socket.SocketManager
-import com.nestor10.slackbot.domain.model.socket.{SocketStatus, SocketConnectionState}
+import zio.*
+import zio.metrics.*
+import zio.stream.*
+
 import java.time.Instant
 
 /** ZIO Runtime metrics for WebSocket connections.

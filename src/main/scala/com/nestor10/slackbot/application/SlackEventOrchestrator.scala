@@ -1,33 +1,14 @@
 package com.nestor10.slackbot.application
 
-import zio.*
+import com.nestor10.slackbot.domain.model.conversation.{BotIdentity, ChannelId, Thread, ThreadId, ThreadMessage, UserId}
+import com.nestor10.slackbot.domain.model.slack.{AppHomeOpened, AppMention, BusinessMessage, ChannelCreated, EventsApiMessage, InteractiveMessage, Message, ReactionAdded, SlashCommand, TeamJoin, UnknownEvent}
 import com.nestor10.slackbot.domain.model.socket.InboundQueue
-import com.nestor10.slackbot.domain.model.slack.{
-  BusinessMessage,
-  EventsApiMessage,
-  InteractiveMessage,
-  SlashCommand,
-  AppMention,
-  Message,
-  ReactionAdded,
-  ChannelCreated,
-  TeamJoin,
-  AppHomeOpened,
-  UnknownEvent
-}
-import com.nestor10.slackbot.domain.model.conversation.{
-  Thread,
-  ThreadMessage,
-  ThreadId,
-  ChannelId,
-  BotIdentity,
-  UserId
-}
 import com.nestor10.slackbot.infrastructure.observability.LogContext
-import java.time.Instant
+import com.nestor10.slackbot.infrastructure.slack.{BotIdentityService, SlackApiClient}
 import com.nestor10.slackbot.infrastructure.storage.MessageStore
-import com.nestor10.slackbot.infrastructure.slack.BotIdentityService
-import com.nestor10.slackbot.infrastructure.slack.SlackApiClient
+import zio.*
+
+import java.time.Instant
 
 trait SlackEventOrchestrator:
   def processMessage(message: BusinessMessage): UIO[BusinessMessage]

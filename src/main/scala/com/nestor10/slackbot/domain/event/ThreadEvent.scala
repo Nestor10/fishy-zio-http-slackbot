@@ -1,15 +1,8 @@
 package com.nestor10.slackbot.domain.event
 
-import com.nestor10.slackbot.domain.model.conversation.{
-  ThreadId,
-  ChannelId,
-  ThreadMessage,
-  ThreadState,
-  MessageId,
-  BotIdentity,
-  UserId
-}
+import com.nestor10.slackbot.domain.model.conversation.{BotIdentity, ChannelId, MessageId, ThreadId, ThreadMessage, ThreadState, UserId}
 import zio.json.*
+
 import java.time.Instant
 
 // Domain events for reactive services - but subscription/broadcasting handled by ThreadHub service

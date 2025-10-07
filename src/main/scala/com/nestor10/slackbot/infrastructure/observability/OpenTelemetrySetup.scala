@@ -1,21 +1,20 @@
 package com.nestor10.slackbot.infrastructure.observability
 
-import zio.*
-import zio.telemetry.opentelemetry.OpenTelemetry
-import zio.telemetry.opentelemetry.tracing.Tracing
-import zio.telemetry.opentelemetry.metrics.Meter
-import zio.telemetry.opentelemetry.metrics.internal.Instrument
+import com.nestor10.slackbot.conf.AppConfig
+import io.opentelemetry.api.common.{AttributeKey, Attributes}
+import io.opentelemetry.exporter.otlp.metrics.OtlpGrpcMetricExporter
+import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter
 import io.opentelemetry.sdk.OpenTelemetrySdk
-import io.opentelemetry.sdk.trace.SdkTracerProvider
-import io.opentelemetry.sdk.trace.`export`.BatchSpanProcessor
 import io.opentelemetry.sdk.metrics.SdkMeterProvider
 import io.opentelemetry.sdk.metrics.`export`.PeriodicMetricReader
-import io.opentelemetry.exporter.otlp.metrics.OtlpGrpcMetricExporter
 import io.opentelemetry.sdk.resources.Resource
-import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter
-import io.opentelemetry.api.common.Attributes
-import io.opentelemetry.api.common.AttributeKey
-import com.nestor10.slackbot.conf.AppConfig
+import io.opentelemetry.sdk.trace.SdkTracerProvider
+import io.opentelemetry.sdk.trace.`export`.BatchSpanProcessor
+import zio.*
+import zio.telemetry.opentelemetry.OpenTelemetry
+import zio.telemetry.opentelemetry.metrics.Meter
+import zio.telemetry.opentelemetry.metrics.internal.Instrument
+import zio.telemetry.opentelemetry.tracing.Tracing
 
 /** OpenTelemetry configuration for Slack bot.
   *

@@ -1,8 +1,8 @@
 package com.nestor10.slackbot.domain.processor
 
-import zio.*
 import com.nestor10.slackbot.domain.service.MessageEventBus.MessageEvent
 import com.nestor10.slackbot.infrastructure.observability.LogContext
+import zio.*
 
 /** Notification processor for sending alerts and notifications.
   *

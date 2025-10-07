@@ -1,8 +1,8 @@
 package com.nestor10.slackbot.infrastructure.observability
 
-import zio._
 import com.nestor10.slackbot.domain.model.conversation._
 import com.nestor10.slackbot.domain.model.slack._
+import zio._
 
 /** Structured logging context helpers for consistent log annotations.
   *

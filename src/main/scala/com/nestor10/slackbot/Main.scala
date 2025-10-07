@@ -1,38 +1,31 @@
 package com.nestor10.slackbot
 
+import com.nestor10.slackbot.application.{ProcessorRegistry, SlackEventOrchestrator}
 import com.nestor10.slackbot.conf.AppConfig
-import com.nestor10.slackbot.domain.service.MessageEventBus
-import com.nestor10.slackbot.application.{SlackEventOrchestrator, ProcessorRegistry}
-import com.nestor10.slackbot.infrastructure.socket.{SocketService, SocketManager}
-import com.nestor10.slackbot.infrastructure.slack.{SlackApiClient, BotIdentityService}
-import com.nestor10.slackbot.infrastructure.storage.MessageStore
-import com.nestor10.slackbot.infrastructure.llm.LLMService
-import com.nestor10.slackbot.domain.processor.{
-  AiBotProcessor,
-  AnalyticsProcessor,
-  NotificationProcessor
-}
-import com.nestor10.slackbot.infrastructure.observability.{
-  OpenTelemetrySetup,
-  StorageMetrics,
-  SocketMetrics,
-  LLMMetrics,
-  LogContext
-}
-import com.nestor10.slackbot.domain.model.socket.{SocketId, InboundQueue}
 import com.nestor10.slackbot.domain.model.slack.{
   BusinessMessage,
   EventsApiMessage,
   InteractiveMessage,
   SlashCommand
 }
+import com.nestor10.slackbot.domain.model.socket.{InboundQueue, SocketId}
+import com.nestor10.slackbot.domain.processor.{
+  AiBotProcessor,
+  AnalyticsProcessor,
+  NotificationProcessor
+}
+import com.nestor10.slackbot.domain.service.MessageEventBus
+import com.nestor10.slackbot.infrastructure.llm.LLMService
+import com.nestor10.slackbot.infrastructure.observability.{LLMMetrics, LogContext, OpenTelemetrySetup, SocketMetrics, StorageMetrics}
+import com.nestor10.slackbot.infrastructure.slack.{BotIdentityService, SlackApiClient}
+import com.nestor10.slackbot.infrastructure.socket.{SocketManager, SocketService}
+import com.nestor10.slackbot.infrastructure.storage.MessageStore
+import zio.config.ConfigErrorOps
 import zio.config.typesafe.TypesafeConfigProvider
-import zio.config.ConfigErrorOps // For prettyPrint extension method
-import zio.http.netty.NettyConfig
-import zio.telemetry.opentelemetry.OpenTelemetry // Phase 13: ZIO Metrics → OpenTelemetry bridge
-
 import zio.http._
+import zio.http.netty.NettyConfig
 import zio.stream._
+import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.{Runtime, durationInt, _}
 
 object Main extends ZIOAppDefault {

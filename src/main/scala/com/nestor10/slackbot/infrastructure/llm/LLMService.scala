@@ -1,10 +1,10 @@
 package com.nestor10.slackbot.infrastructure.llm
 
+import com.nestor10.slackbot.conf.AppConfig
+import com.nestor10.slackbot.domain.model.llm.{ChatMessage, ChatRequest, ChatResponse}
 import zio.*
 import zio.http.*
 import zio.json.*
-import com.nestor10.slackbot.domain.model.llm.{ChatMessage, ChatRequest, ChatResponse}
-import com.nestor10.slackbot.conf.AppConfig
 
 /** Service for interacting with LLM (Large Language Model) APIs.
   *

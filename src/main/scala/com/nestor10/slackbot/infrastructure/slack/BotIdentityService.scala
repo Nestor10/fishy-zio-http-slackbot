@@ -1,8 +1,8 @@
 package com.nestor10.slackbot.infrastructure.slack
 
-import zio.*
 import com.nestor10.slackbot.domain.model.conversation.{BotIdentity, UserId}
 import com.nestor10.slackbot.infrastructure.observability.LogContext
+import zio.*
 
 /** Service for managing bot's own identity.
   *

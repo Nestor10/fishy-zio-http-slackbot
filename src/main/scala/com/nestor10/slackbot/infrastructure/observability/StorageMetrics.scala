@@ -1,9 +1,9 @@
 package com.nestor10.slackbot.infrastructure.observability
 
-import zio.*
-import zio.stream.*
-import zio.metrics.*
 import com.nestor10.slackbot.infrastructure.storage.MessageStore
+import zio.*
+import zio.metrics.*
+import zio.stream.*
 
 /** ZIO Runtime metrics for MessageStore.
   *

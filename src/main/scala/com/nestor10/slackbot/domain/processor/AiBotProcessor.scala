@@ -1,22 +1,17 @@
 package com.nestor10.slackbot.domain.processor
 
-import zio.*
-import zio.telemetry.opentelemetry.tracing.Tracing
-import com.nestor10.slackbot.infrastructure.storage.MessageStore
-import com.nestor10.slackbot.infrastructure.llm.LLMService
-import com.nestor10.slackbot.infrastructure.slack.SlackApiClient
-import com.nestor10.slackbot.infrastructure.observability.{LLMMetrics, LogContext}
+import com.nestor10.slackbot.conf.AppConfig
+import com.nestor10.slackbot.domain.model.conversation.{ChannelId, MessageId, MessageSource, ThreadId, ThreadMessage}
+import com.nestor10.slackbot.domain.model.llm.{ChatMessage, ChatRole}
 import com.nestor10.slackbot.domain.service.MessageEventBus
 import com.nestor10.slackbot.domain.service.MessageEventBus.MessageEvent
-import com.nestor10.slackbot.domain.model.llm.{ChatMessage, ChatRole}
-import com.nestor10.slackbot.domain.model.conversation.{
-  ThreadMessage,
-  ChannelId,
-  MessageId,
-  ThreadId
-}
-import com.nestor10.slackbot.conf.AppConfig
-import com.nestor10.slackbot.domain.model.conversation.MessageSource
+import com.nestor10.slackbot.infrastructure.llm.LLMService
+import com.nestor10.slackbot.infrastructure.observability.{LLMMetrics, LogContext}
+import com.nestor10.slackbot.infrastructure.slack.SlackApiClient
+import com.nestor10.slackbot.infrastructure.storage.MessageStore
+import zio.*
+import zio.telemetry.opentelemetry.tracing.Tracing
+
 import java.time.Instant
 
 /** Per-thread worker: queue, fiber, and activity tracking */

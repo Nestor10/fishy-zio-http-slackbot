@@ -1,13 +1,14 @@
 package com.nestor10.slackbot.infrastructure.socket
 
+import com.nestor10.slackbot.conf.AppConfig
+import com.nestor10.slackbot.domain.model.slack.BusinessMessage
+import com.nestor10.slackbot.domain.model.socket.{InboundQueue, SocketConnectionState, SocketId}
+import com.nestor10.slackbot.infrastructure.observability.{LogContext, SocketMetrics}
+import com.nestor10.slackbot.infrastructure.slack.SlackApiClient
 import zio.*
 import zio.http.*
 import zio.json.*
-import com.nestor10.slackbot.conf.AppConfig
-import com.nestor10.slackbot.infrastructure.slack.SlackApiClient
-import com.nestor10.slackbot.domain.model.socket.{SocketId, SocketConnectionState, InboundQueue}
-import com.nestor10.slackbot.domain.model.slack.BusinessMessage
-import com.nestor10.slackbot.infrastructure.observability.{SocketMetrics, LogContext}
+
 import java.util.concurrent.TimeUnit
 
 trait SocketManager:

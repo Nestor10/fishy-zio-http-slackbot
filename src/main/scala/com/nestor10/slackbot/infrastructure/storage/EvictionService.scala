@@ -1,11 +1,11 @@
 package com.nestor10.slackbot.infrastructure.storage
 
+import com.nestor10.slackbot.domain.model.conversation.{MessageId, Thread, ThreadId, ThreadMessage}
 import com.nestor10.slackbot.infrastructure.storage.MessageStore
-
 import zio.*
-import com.nestor10.slackbot.domain.model.conversation.{ThreadId, MessageId, ThreadMessage, Thread}
-import scala.collection.immutable.SortedMap
+
 import java.time.Instant
+import scala.collection.immutable.SortedMap
 
 /** Eviction service for removing stale threads and messages from MessageStore.
   *
