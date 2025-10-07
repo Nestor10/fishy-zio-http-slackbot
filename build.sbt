@@ -14,9 +14,9 @@ ThisBuild / run / javaOptions ++= Seq(
 
 lazy val root = project
   .in(file("."))
+  .enablePlugins(JavaAppPackaging, DockerPlugin)
   .settings(
     name := "fishy-zio-http-socket",
-    version := "0.1.0-SNAPSHOT",
     organization := "com.nestor10",
 
   scalaVersion := scala3Version,
@@ -43,7 +43,7 @@ lazy val root = project
       "dev.zio" %% "zio-config-magnolia" % "4.0.5",
       "dev.zio" %% "zio-config-typesafe" % "4.0.5",
       "dev.zio" %% "zio-json" % "0.7.44",
-      
+
       // OpenTelemetry + ZIO integration (Observability: Traces, Metrics, Logs)
       "dev.zio" %% "zio-opentelemetry" % "3.1.10",
       "dev.zio" %% "zio-opentelemetry-zio-logging" % "3.1.10", // Trace correlation in logs
@@ -69,3 +69,58 @@ addCommandAlias("dev", "~compile; reStart")
    semanticdbVersion := scalafixSemanticdb.revision
 )
 )
+// ============================================================================
+// Docker Configuration (sbt-native-packager)
+// ============================================================================
+//
+// Multi-arch builds (AMD64 + ARM64) are handled in GitHub Actions using
+// Docker Buildx. Locally, use:
+//   - `sbt Docker/publishLocal` for single-arch testing
+//   - GitHub Actions for multi-arch production images
+
+import com.typesafe.sbt.packager.docker._
+
+// Use podman instead of docker (macOS with podman-machine)
+dockerExecCommand := Seq("podman")
+
+// Run as root for simplicity (can secure later)
+Docker / daemonUser := "root"
+
+Docker / packageName := "fishy-zio-http-slackbot"
+Docker / version := version.value
+dockerRepository := Some("quay.io/nestor10")
+dockerBaseImage := "eclipse-temurin:23-jre-noble"  // Ubuntu Noble with Java 23
+dockerUpdateLatest := true
+dockerExposedPorts := Seq(8080, 8888, 8889)
+
+// Use exec form for better signal handling
+dockerEntrypoint := Seq("/opt/docker/bin/fishy-zio-http-socket")
+
+// ============================================================================
+// Release Configuration (sbt-release)
+// ============================================================================
+
+import ReleaseTransformations._
+import ReleasePlugin.autoImport._
+
+releaseProcess := Seq[ReleaseStep](
+  checkSnapshotDependencies,
+  inquireVersions,
+  runClean,
+  runTest,
+  setReleaseVersion,
+  commitReleaseVersion,
+  tagRelease,
+  releaseStepCommand("docker:publish"),  // Publish Docker image
+  setNextVersion,
+  commitNextVersion,
+  pushChanges
+)
+
+// Version bumping strategy (default: Next = bump last part)
+releaseVersionBump := sbtrelease.Version.Bump.Next
+
+// Custom commit messages
+releaseCommitMessage := s"Release ${version.value}"
+releaseTagComment := s"Release ${version.value}"
+releaseNextCommitMessage := s"Bump version to ${version.value}"
