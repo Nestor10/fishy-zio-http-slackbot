@@ -1,7 +1,13 @@
 package com.nestor10.slackbot.domain.processor
 
 import com.nestor10.slackbot.conf.AppConfig
-import com.nestor10.slackbot.domain.model.conversation.{ChannelId, MessageId, MessageSource, ThreadId, ThreadMessage}
+import com.nestor10.slackbot.domain.model.conversation.{
+  ChannelId,
+  MessageId,
+  MessageSource,
+  ThreadId,
+  ThreadMessage
+}
 import com.nestor10.slackbot.domain.model.llm.{ChatMessage, ChatRole}
 import com.nestor10.slackbot.domain.service.MessageEventBus
 import com.nestor10.slackbot.domain.service.MessageEventBus.MessageEvent
@@ -131,7 +137,12 @@ class AiBotProcessor(
         }
     ).mapError(e => EventProcessor.Error.ProcessingFailed(e, name)).as(())
 
-  /** Get existing worker for thread, or create new one if doesn't exist */
+  /** Get existing worker for thread, or create new one if doesn't exist.
+    *
+    * Each thread gets a dedicated worker with a sliding queue (capacity 1) so that the latest
+    * message always wins - if multiple messages arrive while processing, only the most recent is
+    * kept.
+    */
   private def getOrCreateWorker(threadId: ThreadId): Task[ThreadWorker] =
     threadWorkers.get.flatMap { workers =>
       workers.get(threadId) match
@@ -140,22 +151,11 @@ class AiBotProcessor(
 
         case None =>
           for {
-            // Create new queue (sliding, capacity 1 - latest wins for this thread)
             queue <- Queue.sliding[Instant](1)
-
-            // Track last activity for cleanup
             lastActivity <- Ref.make(Instant.now)
-
-            // Fork dedicated worker for this thread
             fiber <- consumeWorkForThread(threadId, queue).forkDaemon
-
-            // Create worker object
             worker = ThreadWorker(queue, fiber, lastActivity)
-
-            // Add to map
             _ <- threadWorkers.update(_ + (threadId -> worker))
-
-            // Update active workers gauge (Phase 13)
             workersCount <- threadWorkers.get.map(_.size)
             _ <- llmMetrics.setActiveWorkers(workersCount)
 
@@ -223,9 +223,7 @@ class AiBotProcessor(
         llmFiber <- generateResponse(threadId).fork
 
         // Continuous monitor: check if still latest every 10ms while LLM runs
-        // Returns true if should post, false if interrupted
         shouldPost <- monitorLoop(llmFiber, threadId, timestamp).catchAll { error =>
-          // If monitor fails, interrupt LLM and don't post
           llmFiber.interrupt *>
             llmMetrics.recordInterruption("monitor_error") *>
             ZIO.logInfo("Monitor failed") @@
@@ -235,7 +233,6 @@ class AiBotProcessor(
             ZIO.succeed(false)
         }
 
-        // Only post if monitor says we should (LLM completed and still latest)
         _ <-
           if (shouldPost) {
             llmFiber.join
@@ -430,7 +427,6 @@ class AiBotProcessor(
         } yield ()
       }
 
-      // Sleep 10 minutes before next cleanup
       _ <- ZIO.sleep(10.minutes)
     } yield ()).forever
 

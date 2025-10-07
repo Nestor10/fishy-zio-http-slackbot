@@ -55,7 +55,5 @@ logs/
 Thumbs.db
 ehthumbs.db
 
-.github/
-docs/
-
+# Context files (local development notes)
 context/

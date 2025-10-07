@@ -88,11 +88,23 @@ Built for production-ready Slack bots that need reliable, maintainable conversat
 - `podman-compose logs -f` - View all service logs
 
 ### Documentation
-- [OpenTelemetry Setup](docs/OPENTELEMETRY_SETUP.md) - Quick reference
+- [Architecture](docs/ARCHITECTURE.md) - **Complete system architecture** ⭐
+- [ZIO Telemetry Guide](docs/ZIO_TELEMETRY_GUIDE.md) - **Concise telemetry implementation guide** ⭐
+- [OpenTelemetry Setup](docs/OPENTELEMETRY_SETUP.md) - Quick observability reference
 - [OTel Collector Stack](docs/OTEL_COLLECTOR_STACK.md) - Full observability setup
-- [Phase 12 Summary](docs/PHASE_12_COMPLETE.md) - Latest features
-- [Architecture](docs/MESSAGE_ARCHITECTURE.md) - System design
-- [Zio-telemetry Guide](docs/Zio-telemetry.md) - Comprehensive telemetry guide
+- [LLM Providers](docs/LLM_PROVIDERS.md) - Multi-provider LLM configuration
+- [Testing Guide](TESTING_GUIDE.md) - Testing strategies
+
+## Architecture
+
+For a comprehensive overview of the system architecture, design patterns, and implementation details, see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+
+Key highlights:
+- **Event-Driven Architecture** with domain events and pluggable processors
+- **Per-Thread Workers** with latest-wins pattern for optimal UX
+- **Multi-Provider LLM Support** (Ollama, OpenAI, Anthropic, Azure)
+- **Full Observability** with OpenTelemetry tracing and ZIO metrics
+- **Zionomicon Patterns** throughout (service pattern, Hub broadcasting, scoped resources)
 
 ## License
 

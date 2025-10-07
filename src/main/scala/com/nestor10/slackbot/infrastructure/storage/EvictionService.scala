@@ -64,14 +64,12 @@ object EvictionService:
         start <- Clock.instant
         cutoff = start.minus(maxAge)
 
-        // Find threads with last activity before cutoff
         allThreads <- messageStore.threads.get
         staleThreadIds = allThreads.collect {
           case (threadId, thread) if thread.rootMessage.slackCreatedAt.exists(_.isBefore(cutoff)) =>
             threadId
         }.toList
 
-        // Evict each stale thread
         messageCounts <- ZIO.foreach(staleThreadIds)(evictThread)
 
         end <- Clock.instant
@@ -92,18 +90,15 @@ object EvictionService:
 
     def evictThread(threadId: ThreadId): UIO[Int] =
       for {
-        // Find all messages for this thread
         allMessages <- messageStore.messages.get
         threadMessageIds = allMessages.collect {
           case (msgId, msg) if msg.threadId == threadId => msgId
         }.toList
 
-        // Remove messages atomically
         _ <- messageStore.messages.update { msgs =>
           threadMessageIds.foldLeft(msgs)((m, id) => m - id)
         }
 
-        // Remove thread
         _ <- messageStore.threads.update(_ - threadId)
 
         _ <- ZIO.logDebug(
@@ -125,14 +120,17 @@ object EvictionService:
         .forkScoped
         .unit
 
-  /** ZLayer that creates the service and starts the background eviction fiber */
+  /** ZLayer that creates the service and starts the background eviction fiber.
+    *
+    * @note
+    *   Requires MessageStore.InMemory for direct thread/message access
+    */
   val layer: ZLayer[MessageStore & EvictionConfig, Nothing, EvictionService] =
     ZLayer.scoped {
       for {
         store <- ZIO.service[MessageStore]
         config <- ZIO.service[EvictionConfig]
 
-        // Require InMemory implementation for direct access
         inMemoryStore = store match
           case s: MessageStore.InMemory => s
           case _ =>
@@ -140,7 +138,6 @@ object EvictionService:
 
         service = Live(inMemoryStore, config)
 
-        // Start background eviction if enabled
         _ <- ZIO.when(config.enabled) {
           service.scheduleEviction *>
             ZIO.logInfo(
@@ -153,9 +150,9 @@ object EvictionService:
 
 /** Configuration for eviction behavior */
 case class EvictionConfig(
-    enabled: Boolean = false, // Disabled by default for safety
-    maxThreadAge: Duration = 7.days, // Evict threads older than 7 days
-    evictionInterval: Duration = 6.hours // Run eviction every 6 hours
+    enabled: Boolean = false,
+    maxThreadAge: Duration = 7.days,
+    evictionInterval: Duration = 6.hours
 )
 
 object EvictionConfig:

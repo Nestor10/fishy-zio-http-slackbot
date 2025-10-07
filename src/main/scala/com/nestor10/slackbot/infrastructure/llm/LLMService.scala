@@ -211,10 +211,8 @@ object LLMService:
     ZLayer.fromFunction { (config: AppConfig, client: Client) =>
       config.llm.apiKey match
         case Some(key) =>
-          // Cloud provider with API key (OpenAI, Anthropic, Azure, etc)
           Live(client, config.llm.baseUrl, Some(key))
         case None =>
-          // Local Ollama (no authentication required)
           Live(client, config.llm.baseUrl, None)
     }
 

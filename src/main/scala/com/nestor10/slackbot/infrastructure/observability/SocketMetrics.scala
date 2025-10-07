@@ -43,20 +43,16 @@ object SocketMetrics {
     */
   case class Live() extends SocketMetrics {
 
-    // Counter: Total socket connections started (labeled by socket_id)
     private val connectionsStartedCounter = Metric.counterInt("socket_connections_started_total")
 
-    // Counter: Total socket connections closed (labeled by socket_id, reason)
     private val connectionsClosedCounter = Metric.counterInt("socket_connections_closed_total")
 
-    // Histogram: Socket connection duration in seconds (labeled by socket_id, reason)
     private val connectionDurationHistogram = Metric.histogram(
       "socket_connection_duration_seconds",
       MetricKeyType.Histogram.Boundaries
-        .fromChunk(Chunk(10.0, 60.0, 300.0, 900.0, 1800.0, 3600.0)) // 10s, 1m, 5m, 15m, 30m, 1h
+        .fromChunk(Chunk(10.0, 60.0, 300.0, 900.0, 1800.0, 3600.0))
     )
 
-    // Counter: Total network errors (labeled by socket_id, error_category)
     private val networkErrorsCounter = Metric.counterInt("socket_errors_total")
 
     override def recordConnectionStarted(socketId: String): UIO[Unit] =
@@ -71,7 +67,6 @@ object SocketMetrics {
         durationSeconds: Option[Long]
     ): UIO[Unit] =
       for {
-        // Increment closed counter with labels
         _ <- connectionsClosedCounter
           .tagged(
             MetricLabel("socket_id", socketId),
@@ -80,7 +75,6 @@ object SocketMetrics {
           .increment
           .unit
 
-        // Record duration histogram if available
         _ <- ZIO.whenCase(durationSeconds) { case Some(duration) =>
           connectionDurationHistogram
             .tagged(
@@ -116,15 +110,15 @@ object SocketMetrics {
       _ <- Metric
         .gauge("socket_connections_ok")
         .tagged(MetricLabel("status", "ok"))
-        .set(0.0) // Initialize
-        .forkDaemon *> // Fork polling fiber
+        .set(0.0)
+        .forkDaemon *>
         ZStream
           .repeatZIO(
             socketManager.getAllConnectionStates.map { states =>
               states.count(_._2.status == SocketStatus.Ok).toDouble
             }
           )
-          .schedule(Schedule.fixed(10.seconds)) // Poll every 10 seconds
+          .schedule(Schedule.fixed(10.seconds))
           .foreach { count =>
             Metric
               .gauge("socket_connections_ok")
@@ -133,7 +127,6 @@ object SocketMetrics {
           }
           .forkScoped
 
-      // Gauge: Count of sockets in "closing_soon" status (warned/expiring)
       _ <- Metric
         .gauge("socket_connections_closing_soon")
         .tagged(MetricLabel("status", "closing_soon"))
@@ -154,7 +147,6 @@ object SocketMetrics {
           }
           .forkScoped
 
-      // Gauge: Count of sockets in "closed" status (disconnected)
       _ <- Metric
         .gauge("socket_connections_closed")
         .tagged(MetricLabel("status", "closed"))
@@ -175,7 +167,6 @@ object SocketMetrics {
           }
           .forkScoped
 
-      // Gauge: Total number of socket connections (any status)
       _ <- Metric
         .gauge("socket_connections_total")
         .set(0.0)
@@ -192,8 +183,6 @@ object SocketMetrics {
           }
           .forkScoped
 
-      // Gauge: Seconds since last pong received (max staleness across all sockets)
-      // CRITICAL for detecting unhealthy connections before they're marked closed
       _ <- Metric
         .gauge("socket_pong_seconds_since_last")
         .set(0.0)

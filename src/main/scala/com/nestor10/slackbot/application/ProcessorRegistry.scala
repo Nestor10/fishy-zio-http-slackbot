@@ -52,6 +52,17 @@ object ProcessorRegistry:
       override def getProcessors: UIO[Set[EventProcessor]] =
         processors.get
 
+      /** Start the event processing worker fiber.
+        *
+        * Launches a daemon fiber that processes events from the MessageEventBus. The worker fiber
+        * is resilient - if it crashes, it automatically restarts to ensure continuous event
+        * processing.
+        *
+        * @note
+        *   Processor failures are isolated and don't affect other processors or the event bus.
+        * @return
+        *   Runtime fiber handle for the worker
+        */
       override def startProcessing: IO[Nothing, Fiber.Runtime[Nothing, Unit]] =
         ZIO.logInfo("Starting worker fiber") @@
           LogContext.registry *>
@@ -73,25 +84,22 @@ object ProcessorRegistry:
                 _ <- ZIO.logDebug(
                   s"Event received: ${event.getClass.getSimpleName} -> ${matchingProcs.size} processors"
                 ) @@ LogContext.registry
-                // Process in parallel with error isolation
                 _ <- ZIO.foreachParDiscard(matchingProcs) { processor =>
                   processor
                     .process(event)
                     .catchAll { error =>
-                      // Log error but don't fail - isolate processor failures
                       ZIO.logError(
                         s"Processor error: ${processor.name} - ${error.message}"
                       ) @@ LogContext.registry @@
                         LogContext.errorType(error.getClass.getSimpleName)
                     }
-                    .forkDaemon // Fork each processor to prevent blocking
+                    .forkDaemon
                     .unit
                 }
               } yield ()
             }.runDrain
           }
           .catchAllCause { cause =>
-            // Worker fiber should never die - log and restart
             ZIO.logErrorCause("Processor worker died - restarting", cause) @@
               LogContext.registry *>
               processEvents

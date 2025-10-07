@@ -63,19 +63,15 @@ object LLMMetrics:
   /** Live implementation using ZIO Metrics */
   case class Live() extends LLMMetrics:
 
-    // Counter: Total LLM requests (labeled by provider and model)
     private val requestsCounter = Metric.counterInt("llm_requests_total")
 
-    // Counter: Total LLM interruptions (labeled by reason)
     private val interruptionsCounter = Metric.counterInt("llm_interruptions_total")
 
-    // Histogram: LLM latency in seconds (with buckets for 1s, 5s, 10s, 30s, 60s)
     private val latencyHistogram = Metric.histogram(
       "llm_latency_seconds",
       MetricKeyType.Histogram.Boundaries.linear(1.0, 1.0, 60)
     )
 
-    // Gauge: Active thread workers (speculative execution count)
     private val activeWorkersGauge = Metric.gauge("thread_workers_active")
 
     override def recordRequest(provider: String, model: String): UIO[Unit] =

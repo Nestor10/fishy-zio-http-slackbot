@@ -1,7 +1,26 @@
 package com.nestor10.slackbot.application
 
-import com.nestor10.slackbot.domain.model.conversation.{BotIdentity, ChannelId, Thread, ThreadId, ThreadMessage, UserId}
-import com.nestor10.slackbot.domain.model.slack.{AppHomeOpened, AppMention, BusinessMessage, ChannelCreated, EventsApiMessage, InteractiveMessage, Message, ReactionAdded, SlashCommand, TeamJoin, UnknownEvent}
+import com.nestor10.slackbot.domain.model.conversation.{
+  BotIdentity,
+  ChannelId,
+  Thread,
+  ThreadId,
+  ThreadMessage,
+  UserId
+}
+import com.nestor10.slackbot.domain.model.slack.{
+  AppHomeOpened,
+  AppMention,
+  BusinessMessage,
+  ChannelCreated,
+  EventsApiMessage,
+  InteractiveMessage,
+  Message,
+  ReactionAdded,
+  SlashCommand,
+  TeamJoin,
+  UnknownEvent
+}
 import com.nestor10.slackbot.domain.model.socket.InboundQueue
 import com.nestor10.slackbot.infrastructure.observability.LogContext
 import com.nestor10.slackbot.infrastructure.slack.{BotIdentityService, SlackApiClient}
@@ -75,11 +94,9 @@ object SlackEventOrchestrator:
                 )
               )
             (thread, messages) = threadAndMessages
-            // Store the thread metadata
             _ <- messageStore
               .storeThread(thread)
               .mapError(err => new RuntimeException(s"Storage error: ${err.getMessage}"))
-            // Store each individual message
             _ <- ZIO.foreach(messages) { msg =>
               messageStore
                 .store(msg)
@@ -101,6 +118,9 @@ object SlackEventOrchestrator:
         * since storage logic is identical.
         *
         * Phase 10: Now attempts thread recovery from Slack if thread not found in memory.
+        *
+        * @note
+        *   Stores ALL messages (including the bot's own) for complete conversation history.
         */
       private def handleThreadReply(
           message: Message,
@@ -112,15 +132,12 @@ object SlackEventOrchestrator:
             val threadId = ThreadId(threadTsDouble)
             val channelId = ChannelId(message.channel)
 
-            // Try to retrieve thread, with recovery fallback
             for {
               threadOpt <- messageStore.retrieveThread(threadId).option
               thread <- threadOpt match {
                 case Some(t) =>
-                  // Fast path: Thread already in memory
                   ZIO.succeed(Some(t))
                 case None =>
-                  // Slow path: Thread not in memory, try to recover from Slack
                   ZIO.logInfo(
                     s"Thread not in memory - attempting recovery for ${threadId.formatted}"
                   ) @@
@@ -136,11 +153,10 @@ object SlackEventOrchestrator:
                           LogContext.threadId(threadId) @@
                           LogContext.errorType(err.getClass.getSimpleName)
                       )
-                      .option // Convert failure to None
+                      .option
               }
               _ <- thread match {
                 case Some(t) =>
-                  // We have the thread! Create and store the message
                   val botIdentity = t.botIdentity
                   val threadMessage =
                     ThreadMessage.fromSlackMessage(message, threadId, botIdentity)
@@ -162,14 +178,12 @@ object SlackEventOrchestrator:
                         LogContext.threadId(threadId) @@
                         LogContext.errorType(error.getClass.getSimpleName)
                     )
-                    .catchAll(_ => ZIO.unit) // Continue even if storage fails
+                    .catchAll(_ => ZIO.unit)
                 case None =>
-                  // Recovery failed, skip this message
                   ZIO.unit
               }
             } yield ()
           case None =>
-            // Not a thread reply, just a regular message
             ZIO.unit
         }
 
@@ -215,7 +229,6 @@ object SlackEventOrchestrator:
                           LogContext.orchestrator @@
                           LogContext.threadId(thread.id) @@
                           LogContext.channelId(channelId) *>
-                          // Store the thread in MessageStore
                           messageStore
                             .storeThread(thread)
                             .tapError(error =>
@@ -224,15 +237,13 @@ object SlackEventOrchestrator:
                                 LogContext.threadId(thread.id) @@
                                 LogContext.errorType(error.getClass.getSimpleName)
                             )
-                            .catchAll(_ => ZIO.unit) // Log error but don't fail message processing
+                            .catchAll(_ => ZIO.unit)
                           *>
                           ZIO.logInfo(
                             s"Thread stored - id=${thread.id.formatted}"
                           ) @@
                           LogContext.orchestrator @@
                           LogContext.threadId(thread.id) *>
-                          // Phase 7b: MessageStore now publishes ThreadCreated event (Option 2)
-                          // Verify storage by retrieving what we just stored
                           messageStore
                             .retrieveThread(thread.id)
                             .flatMap { retrievedThread =>
@@ -253,17 +264,12 @@ object SlackEventOrchestrator:
                       case None =>
                         ZIO.logInfo("Thread mention discarded - mention in existing thread") @@
                           LogContext.orchestrator *>
-                          // This mention was in an existing thread - we ignore it per bot behavior
                           ZIO.succeed(event)
                     }
                   }
               }
 
           case message: Message =>
-            // Phase 7c: No filtering in MessageProcessor - processors filter via canProcess()
-            // Store ALL messages (including bot's own) for complete conversation history
-
-            // Log the message with appropriate icon based on channel type and thread status
             val isReply = message.thread_ts.isDefined
             val messageType = message.channel_type match {
               case "im"    => if (isReply) "dm_thread_reply" else "direct_message"
@@ -287,7 +293,6 @@ object SlackEventOrchestrator:
                   LogContext.orchestrator @@
                   LogContext.threadId(ThreadId(threadTs))
               ) *>
-              // Handle thread reply storage (identical logic for all channel types)
               handleThreadReply(message, message.channel_type, event.envelope_id) *>
               ZIO.succeed(event)
 
@@ -297,7 +302,6 @@ object SlackEventOrchestrator:
             ) @@
               LogContext.orchestrator @@
               LogContext.userId(UserId(reactionAdded.user)) *>
-              // Handle reaction - analytics, gamification, etc.
               // TODO: Add reaction tracking, engagement metrics, etc.
               ZIO.succeed(event)
 
@@ -306,7 +310,6 @@ object SlackEventOrchestrator:
               s"Channel created - envelope=${event.envelope_id} channel=${channelCreated.channel.name}"
             ) @@
               LogContext.orchestrator *>
-              // Handle new channel - auto-join bot, welcome message, etc.
               // TODO: Add channel setup, permissions check, etc.
               ZIO.succeed(event)
 
@@ -316,7 +319,6 @@ object SlackEventOrchestrator:
             ) @@
               LogContext.orchestrator @@
               LogContext.userId(UserId(teamJoin.user)) *>
-              // Handle new team member - onboarding, welcome, etc.
               // TODO: Add user onboarding, welcome DM, etc.
               ZIO.succeed(event)
 
@@ -326,7 +328,6 @@ object SlackEventOrchestrator:
             ) @@
               LogContext.orchestrator @@
               LogContext.userId(UserId(appHomeOpened.user)) *>
-              // Handle app home visit - show personalized content
               // TODO: Add personalized home view, user stats, etc.
               ZIO.succeed(event)
 
@@ -335,7 +336,6 @@ object SlackEventOrchestrator:
               s"Unknown event - envelope=${event.envelope_id} type=${unknown.`type`}"
             ) @@
               LogContext.orchestrator *>
-              // Log unknown events for debugging
               // TODO: Add telemetry for unknown event types
               ZIO.succeed(event)
 
@@ -344,7 +344,6 @@ object SlackEventOrchestrator:
               s"Other event - envelope=${event.envelope_id} type=${other.getClass.getSimpleName}"
             ) @@
               LogContext.orchestrator *>
-              // Handle other event types generically
               // TODO: Add generic event handling, logging, etc.
               ZIO.succeed(event)
         }

@@ -45,19 +45,16 @@ object OpenTelemetrySetup:
   def otelSdk(cfg: AppConfig): ZIO[Scope, Throwable, io.opentelemetry.api.OpenTelemetry] =
     ZIO.acquireRelease {
       ZIO.attempt {
-        // 1. OTLP gRPC span exporter (traces)
         val spanExporter = OtlpGrpcSpanExporter
           .builder()
           .setEndpoint(cfg.otel.otlpEndpoint)
           .build()
 
-        // 2. OTLP gRPC metric exporter (metrics)
         val metricExporter = OtlpGrpcMetricExporter
           .builder()
           .setEndpoint(cfg.otel.otlpEndpoint)
           .build()
 
-        // 3. Resource with service name
         val resource = Resource.create(
           Attributes.of(
             AttributeKey.stringKey("service.name"),
@@ -65,14 +62,12 @@ object OpenTelemetrySetup:
           )
         )
 
-        // 4. Tracer provider with batch processor
         val tracerProvider = SdkTracerProvider
           .builder()
           .addSpanProcessor(BatchSpanProcessor.builder(spanExporter).build())
           .setResource(resource)
           .build()
 
-        // 5. Meter provider with periodic metric reader (10s export interval)
         val meterProvider = SdkMeterProvider
           .builder()
           .registerMetricReader(
@@ -84,7 +79,6 @@ object OpenTelemetrySetup:
           .setResource(resource)
           .build()
 
-        // 6. Build SDK with both tracing and metrics
         val sdk = OpenTelemetrySdk
           .builder()
           .setTracerProvider(tracerProvider)

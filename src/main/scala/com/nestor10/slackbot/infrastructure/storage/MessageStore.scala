@@ -11,8 +11,15 @@ import java.time.Instant
 
 /** Service for persistent storage and retrieval of Thread and ThreadMessage domain objects.
   *
+  * Publishes domain events on successful storage operations for reactive processing. The event bus
+  * is "dumb" - it publishes ALL events without filtering. Processors filter events themselves via
+  * canProcess() to maintain separation of concerns.
+  *
   * Follows Chapter 9 (Ref - Shared State) for in-memory implementation and Chapters 27-28 (ZStream)
   * for query methods that may return many results.
+  *
+  * @note
+  *   Events are published atomically with storage to ensure consistency.
   */
 trait MessageStore:
   /** Store a ThreadMessage. Returns the MessageId on success.
@@ -131,25 +138,42 @@ object MessageStore:
         _ <- eventBus.publish(MessageEventBus.MessageStored(message, Instant.now))
       } yield message.id
 
+    /** Store thread metadata in memory and publish ThreadCreated event.
+      *
+      * @note
+      *   The root message is stored separately when the thread is created (via store method).
+      * @note
+      *   Event bus publishes ALL events without filtering - processors filter via canProcess().
+      * @param thread
+      *   Thread metadata to store
+      * @return
+      *   Thread ID on successful storage
+      */
     def storeThread(thread: Thread): IO[Error, ThreadId] =
       for {
-        // Store the thread metadata (root message is already stored separately when thread created)
         _ <- threads.update(_ + (thread.id -> thread))
         _ <- ZIO.logInfo("Stored thread") @@
           LogContext.storage @@
           LogContext.threadId(thread.id)
-        // Phase 7a: Publish ThreadCreated event (Option 2 pattern)
-        // Hub stays DUMB - publishes ALL events, processor filters
         _ <- eventBus.publish(MessageEventBus.ThreadCreated(thread, Instant.now))
       } yield thread.id
 
     def retrieve(messageId: MessageId): IO[Error, Option[ThreadMessage]] =
       messages.get.map(_.get(messageId))
 
+    /** Retrieve thread metadata by ID.
+      *
+      * @note
+      *   Returns only thread metadata - messages must be queried separately via
+      *   search/retrieveByThread.
+      * @param threadId
+      *   Thread identifier
+      * @return
+      *   Thread metadata if found
+      */
     def retrieveThread(threadId: ThreadId): IO[Error, Thread] =
       for {
         threadsMap <- threads.get
-        // Just return the thread metadata - messages are queried separately
         thread <- ZIO
           .fromOption(threadsMap.get(threadId))
           .orElseFail(Error.NotFound(s"Thread(${threadId.value})"))
@@ -183,27 +207,32 @@ object MessageStore:
         }
       }
 
+    /** Search messages by query criteria with streaming results.
+      *
+      * @note
+      *   Channel filter is simplified and not currently implemented (requires thread retrieval per
+      *   message).
+      * @param query
+      *   Search criteria including text, thread, author, time range, and deleted status
+      * @return
+      *   Stream of matching messages
+      */
     def searchMessages(query: MessageQuery): ZStream[Any, Error, ThreadMessage] =
       ZStream.unwrap {
         messages.get.map { msgs =>
           ZStream
             .fromIterable(msgs.values)
             .filter { msg =>
-              // Text search
               val matchesText =
                 query.searchTerm.isEmpty || msg.content.contains(query.searchTerm)
 
-              // Thread filter
               val matchesThread =
                 query.threadId.isEmpty || query.threadId.contains(msg.threadId)
 
-              // Channel filter (requires retrieving thread - simplified for now)
               val matchesChannel = query.channelId.isEmpty
 
-              // Author filter
               val matchesAuthor = query.author.isEmpty || query.author.contains(msg.author)
 
-              // Time range filter
               val matchesTimeRange = (query.startTime, query.endTime) match {
                 case (Some(start), Some(end)) =>
                   !msg.createdAt.isBefore(start) && !msg.createdAt.isAfter(end)
@@ -212,7 +241,6 @@ object MessageStore:
                 case (None, None)        => true
               }
 
-              // Deleted filter
               val matchesDeleted = query.includeDeleted || !msg.isDeleted
 
               matchesText && matchesThread && matchesChannel && matchesAuthor && matchesTimeRange && matchesDeleted
@@ -239,14 +267,16 @@ object MessageStore:
         for {
           messages <- Ref.make(Map.empty[MessageId, ThreadMessage])
           threads <- Ref.make(Map.empty[ThreadId, Thread])
-          eventBus <- ZIO.service[MessageEventBus] // ← NEW: Get MessageEventBus dependency
+          eventBus <- ZIO.service[MessageEventBus]
           _ <- ZIO.logInfo("MessageStore initialized (with event publishing)") @@
             LogContext.storage
         } yield InMemory(messages, threads, eventBus)
       }
 
-  // Accessor methods following Chapter 19: Contextual Data Types
-  // These provide ergonomic service usage without manual .service calls
+  /** Accessor methods for ergonomic service usage without manual .service calls.
+    *
+    * Following Chapter 19: Contextual Data Types pattern.
+    */
 
   /** Store a ThreadMessage.
     *

@@ -16,7 +16,13 @@ import com.nestor10.slackbot.domain.processor.{
 }
 import com.nestor10.slackbot.domain.service.MessageEventBus
 import com.nestor10.slackbot.infrastructure.llm.LLMService
-import com.nestor10.slackbot.infrastructure.observability.{LLMMetrics, LogContext, OpenTelemetrySetup, SocketMetrics, StorageMetrics}
+import com.nestor10.slackbot.infrastructure.observability.{
+  LLMMetrics,
+  LogContext,
+  OpenTelemetrySetup,
+  SocketMetrics,
+  StorageMetrics
+}
 import com.nestor10.slackbot.infrastructure.slack.{BotIdentityService, SlackApiClient}
 import com.nestor10.slackbot.infrastructure.socket.{SocketManager, SocketService}
 import com.nestor10.slackbot.infrastructure.storage.MessageStore

@@ -31,7 +31,6 @@ object StorageMetrics {
     for {
       messageStore <- ZIO.service[MessageStore]
 
-      // Gauge: Current message count (poll every 10s)
       _ <- Metric
         .gauge("storage_messages_count")
         .set(0.0)
@@ -46,7 +45,6 @@ object StorageMetrics {
           }
           .forkScoped
 
-      // Gauge: Current thread count (poll every 10s)
       _ <- Metric
         .gauge("storage_threads_count")
         .set(0.0)

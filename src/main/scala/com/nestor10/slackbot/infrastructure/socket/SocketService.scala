@@ -1,7 +1,16 @@
 package com.nestor10.slackbot.infrastructure.socket
 
 import com.nestor10.slackbot.conf.AppConfig
-import com.nestor10.slackbot.domain.model.slack.{AckResponse, BusinessMessage, Disconnect, EventsApiMessage, Hello, InteractiveMessage, SlackSocketMessage, SlashCommand}
+import com.nestor10.slackbot.domain.model.slack.{
+  AckResponse,
+  BusinessMessage,
+  Disconnect,
+  EventsApiMessage,
+  Hello,
+  InteractiveMessage,
+  SlackSocketMessage,
+  SlashCommand
+}
 import com.nestor10.slackbot.domain.model.socket.{InboundQueue, SocketConnectionState, SocketId}
 import com.nestor10.slackbot.infrastructure.observability.LogContext
 import com.nestor10.slackbot.infrastructure.slack.SlackApiClient

@@ -20,10 +20,6 @@ import zio._
   */
 object LogContext {
 
-  // ============================================================================
-  // Component Tags (subsystem identification)
-  // ============================================================================
-
   def aiBot = ZIOAspect.annotated("component", "ai_bot")
 
   def storage = ZIOAspect.annotated("component", "storage")
@@ -48,10 +44,6 @@ object LogContext {
 
   def app = ZIOAspect.annotated("component", "app")
 
-  // ============================================================================
-  // Domain Entity IDs (for correlation)
-  // ============================================================================
-
   def threadId(id: ThreadId) = ZIOAspect.annotated("thread_id", id.value.toString)
 
   def channelId(id: ChannelId) = ZIOAspect.annotated("channel_id", id.value)
@@ -62,15 +54,7 @@ object LogContext {
 
   def connectionId(id: String) = ZIOAspect.annotated("connection_id", id)
 
-  // ============================================================================
-  // Operations (action identification)
-  // ============================================================================
-
   def operation(op: String) = ZIOAspect.annotated("operation", op)
-
-  // ============================================================================
-  // LLM-Specific Context
-  // ============================================================================
 
   def llmProvider(provider: String) = ZIOAspect.annotated("llm_provider", provider)
 
@@ -78,15 +62,7 @@ object LogContext {
 
   def latency(ms: Long) = ZIOAspect.annotated("latency_ms", ms.toString)
 
-  // ============================================================================
-  // Event Types
-  // ============================================================================
-
   def eventType(eventType: String) = ZIOAspect.annotated("event_type", eventType)
-
-  // ============================================================================
-  // Error Context
-  // ============================================================================
 
   def errorType(error: String) = ZIOAspect.annotated("error_type", error)
 
