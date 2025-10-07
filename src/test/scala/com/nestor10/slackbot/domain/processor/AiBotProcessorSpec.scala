@@ -7,7 +7,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import com.nestor10.slackbot.infrastructure.storage.MessageStore
 import com.nestor10.slackbot.infrastructure.llm.LLMService
 import com.nestor10.slackbot.infrastructure.slack.SlackApiClient
-import com.nestor10.slackbot.infrastructure.observability.{LLMMetrics, OpenTelemetrySetup}
+import com.nestor10.slackbot.infrastructure.observability.{LLMMetrics, OtelSdk}
 import com.nestor10.slackbot.domain.service.MessageEventBus
 import com.nestor10.slackbot.domain.model.conversation.*
 import com.nestor10.slackbot.domain.model.llm.{ChatMessage, ChatRole}
@@ -161,11 +161,6 @@ object AiBotProcessorSpec extends ZIOSpecDefault:
       temperature = Some(0.7),
       maxTokens = None,
       systemPrompt = "You are a helpful test bot."
-    ),
-    otel = com.nestor10.slackbot.conf.OtelConfig(
-      otlpEndpoint = "http://localhost:4317",
-      serviceName = "test-service",
-      instrumentationScopeName = "test-scope"
     )
   )
 
@@ -337,7 +332,9 @@ object AiBotProcessorSpec extends ZIOSpecDefault:
     TrackingSlackClient.refLayer, // Ref to access posted messages
     LLMMetrics.Live.layer, // Real metrics service
     ZLayer.succeed(testConfig),
-    OpenTelemetrySetup.live,
+    OtelSdk.layer, // Auto-fallback to no-op (testConfig has otel = None)
+    zio.telemetry.opentelemetry.OpenTelemetry.tracing("test"),
+    zio.telemetry.opentelemetry.OpenTelemetry.contextZIO,
     AiBotProcessor.layer
   ) @@ TestAspect.sequential @@ TestAspect.withLiveClock
 

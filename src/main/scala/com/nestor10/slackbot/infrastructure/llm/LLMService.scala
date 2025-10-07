@@ -124,9 +124,10 @@ object LLMService:
       for {
         // Build HTTP request
         requestBody <- ZIO.succeed(request.toJson)
-        _ <- ZIO.logDebug(s"🤖 LLM_REQUEST: model=$model, messages=${messages.size}")
+        _ <- ZIO.logDebug(s"LLM_REQUEST: model=$model, messages=${messages.size}")
 
         url = s"$baseUrl/v1/chat/completions"
+        _ <- ZIO.logInfo(s"LLM_REQUEST: model=$model, messages=${messages.size}, url=${url}")
         headers = Headers(
           Header.ContentType(MediaType.application.json)
         ) ++ apiKey.map(key => Headers(Header.Authorization.Bearer(key))).getOrElse(Headers.empty)
@@ -137,7 +138,12 @@ object LLMService:
         response <- ZIO.scoped {
           client
             .request(httpRequest)
-            .mapError(e => Error.NetworkError("Failed to send request", e))
+            .tapError(e =>
+              ZIO.logWarning(
+                s"LLM HTTP request failed: ${e.getClass.getSimpleName} - ${e.getMessage}"
+              )
+            )
+            .mapError(e => Error.NetworkError(s"Failed to send request to $url", e))
         }
 
         // Handle response

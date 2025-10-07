@@ -306,7 +306,7 @@ class AiBotProcessor(
 
       // DIAGNOSTIC: Log conversation being sent to LLM
       _ <- ZIO.foreach(allMessages.zipWithIndex) { case (msg, idx) =>
-        ZIO.logInfo("LLM context message") @@
+        ZIO.logDebug("LLM context message") @@
           LogContext.aiBot @@
           LogContext.threadId(threadId) @@
           ZIOAspect.annotated("index", idx.toString) @@
@@ -314,7 +314,8 @@ class AiBotProcessor(
           ZIOAspect.annotated("content_preview", msg.content.take(100))
       }
 
-      // Call LLM (this can take several seconds - interruptible!)
+      attemptRef <- Ref.make(0)
+      notifiedRef <- Ref.make(false) // Track if we've sent error message to Slack
       response <- llmService
         .chat(
           messages = allMessages,
@@ -322,7 +323,49 @@ class AiBotProcessor(
           temperature = config.llm.temperature,
           maxTokens = config.llm.maxTokens
         )
-        .mapError(e => new RuntimeException(s"LLM error: $e"))
+        .tapError { error =>
+          attemptRef.updateAndGet(_ + 1).flatMap { attempt =>
+            // On first failure, send friendly error message to Slack
+            val notifyUser = notifiedRef.get.flatMap { alreadyNotified =>
+              if (!alreadyNotified && attempt == 1) {
+                val errorMessage =
+                  "🤖💫 Oops! I'm having a little trouble connecting to my brain right now... 🧠⚡\n\n" +
+                    "🔄 Don't worry! I'm automatically retrying and should be back online shortly! ✨\n\n" +
+                    "⏱️ Hang tight while I get my circuits sorted out! 🛠️💙"
+
+                postResponse(threadId, errorMessage)
+                  .catchAll(e =>
+                    ZIO.logWarning(s"Failed to send error message to Slack: ${e.getMessage}")
+                  ) *>
+                  notifiedRef.set(true)
+              } else {
+                ZIO.unit
+              }
+            }
+
+            notifyUser *>
+              ZIO.logWarning(
+                s"LLM call failed (attempt $attempt/5): ${error.message}"
+              ) @@
+              LogContext.aiBot @@
+              LogContext.threadId(threadId) @@
+              LogContext.errorType(error.getClass.getSimpleName) @@
+              ZIOAspect.annotated("retry_attempt", attempt.toString) @@
+              ZIOAspect.annotated("error_message", error.message)
+          }
+        }
+        .retry(
+          Schedule.exponential(2.seconds, 2.0) &&
+            Schedule.recurs(4)
+        )
+        .tapError { error =>
+          ZIO.logError(s"LLM call failed after all retries: ${error.message}") @@
+            LogContext.aiBot @@
+            LogContext.threadId(threadId) @@
+            LogContext.errorType(error.getClass.getSimpleName) @@
+            ZIOAspect.annotated("error_message", error.message)
+        }
+        .mapError(e => new RuntimeException(s"LLM error after retries: ${e.message}"))
 
       endTime <- Clock.currentTime(java.util.concurrent.TimeUnit.MILLISECONDS)
       latency = endTime - startTime

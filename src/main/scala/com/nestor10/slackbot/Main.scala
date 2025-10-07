@@ -19,9 +19,11 @@ import com.nestor10.slackbot.infrastructure.llm.LLMService
 import com.nestor10.slackbot.infrastructure.observability.{
   LLMMetrics,
   LogContext,
-  OpenTelemetrySetup,
+  Metrics,
+  OtelSdk,
   SocketMetrics,
-  StorageMetrics
+  StorageMetrics,
+  Tracing
 }
 import com.nestor10.slackbot.infrastructure.slack.{BotIdentityService, SlackApiClient}
 import com.nestor10.slackbot.infrastructure.socket.{SocketManager, SocketService}
@@ -44,8 +46,9 @@ object Main extends ZIOAppDefault {
         .forceCloseTimeout(5.seconds)
         .forwardCloseFrames(true)
     )
-    .connectionTimeout(30.seconds)
+    .connectionTimeout(5.seconds)
     .idleTimeout(120.seconds)
+    .dynamicConnectionPool(5, 20, 100.milliseconds)
 
   private val clientConfigLayer = ZLayer.succeed(clientConfig)
 
@@ -119,17 +122,20 @@ object Main extends ZIOAppDefault {
             } yield ()
           }
 
-          // Add cleanup using ensuring - this runs regardless of success/failure/interruption
           program
             .provide(
-              Scope.default, // Provide global scope for resource management
+              Scope.default,
               clientConfigLayer,
               Client.live,
               ZLayer.succeed(NettyConfig.default),
               DnsResolver.default,
               inboundLayer,
               ZLayer.succeed(cfg), // Configuration (already validated)
-              OpenTelemetrySetup.liveWithMetrics, // Phase 12/13: Distributed tracing + metrics (OTLP to Collector)
+              // Telemetry: auto-fallback to no-op if config missing or collector unavailable
+              OtelSdk.layer,
+              Metrics.live,
+              Tracing.live,
+              OpenTelemetry.contextZIO,
               OpenTelemetry.zioMetrics, // Phase 13: Export ZIO runtime metrics to OpenTelemetry (enables labeled metrics)
               SocketService.Live.layer,
               SlackApiClient.Live.layer,

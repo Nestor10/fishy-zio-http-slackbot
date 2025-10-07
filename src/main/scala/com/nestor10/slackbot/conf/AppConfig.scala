@@ -4,9 +4,9 @@ import zio._
 import zio.config.magnolia.deriveConfig
 
 final case class LlmConfig(
-    baseUrl: String = "http://127.0.0.1:11434", // Ollama default, OpenAI: https://api.openai.com
+    baseUrl: String, // Ollama default, OpenAI: https://api.openai.com
     apiKey: Option[String] = None, // Required for OpenAI, Anthropic, etc; not needed for Ollama
-    model: String = "qwen2.5:0.5b",
+    model: String,
     temperature: Option[Double] = Some(0.7),
     maxTokens: Option[Int] = None,
     systemPrompt: String = "You are a helpful assistant in a Slack workspace."
@@ -24,8 +24,8 @@ final case class AppConfig(
     slackBotToken: String,
     debugReconnects: Boolean,
     socketCount: Int,
-    llm: LlmConfig = LlmConfig(),
-    otel: OtelConfig
+    llm: LlmConfig,
+    otel: Option[OtelConfig] = None
 )
 
 object AppConfig {
