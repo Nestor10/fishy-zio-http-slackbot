@@ -5,7 +5,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import com.nestor10.slackbot.infrastructure.storage.MessageStore
 import com.nestor10.slackbot.infrastructure.llm.LLMService
 import com.nestor10.slackbot.infrastructure.slack.SlackApiClient
-import com.nestor10.slackbot.infrastructure.observability.LLMMetrics
+import com.nestor10.slackbot.infrastructure.observability.{LLMMetrics, LogContext}
 import com.nestor10.slackbot.domain.service.MessageEventBus
 import com.nestor10.slackbot.domain.service.MessageEventBus.MessageEvent
 import com.nestor10.slackbot.domain.model.llm.{ChatMessage, ChatRole}
@@ -105,7 +105,9 @@ class AiBotProcessor(
     // Skip events without timestamp (can't compare)
     (timestampOpt match
       case None =>
-        ZIO.logWarning(s"🤖 AI_BOT: Skipping event for ${threadId.formatted} (no Slack timestamp)")
+        ZIO.logWarning("Skipping event (no Slack timestamp)") @@
+          LogContext.aiBot @@
+          LogContext.threadId(threadId)
 
       case Some(timestamp) =>
         // Check if this event is newer than what we've already processed for THIS thread
@@ -113,10 +115,11 @@ class AiBotProcessor(
           processedMap.get(threadId) match
             case Some(lastProcessed) if timestamp.toEpochMilli <= lastProcessed.toEpochMilli =>
               // This event is older or equal to what we already processed - skip it
-              ZIO.logDebug(
-                s"🤖 AI_BOT: Skipping stale event for ${threadId.formatted} " +
-                  s"(event=${timestamp.toEpochMilli}, processed=${lastProcessed.toEpochMilli})"
-              )
+              ZIO.logDebug("Skipping stale event") @@
+                LogContext.aiBot @@
+                LogContext.threadId(threadId) @@
+                ZIOAspect.annotated("event_ts", timestamp.toEpochMilli.toString) @@
+                ZIOAspect.annotated("processed_ts", lastProcessed.toEpochMilli.toString)
 
             case _ =>
               // New event - get or create worker for this thread, then enqueue
@@ -125,9 +128,10 @@ class AiBotProcessor(
                 worker <- getOrCreateWorker(threadId)
                 _ <- worker.queue.offer(timestamp)
                 _ <- worker.lastActivity.set(Instant.now) // Update activity timestamp
-                _ <- ZIO.logDebug(
-                  s"🤖 AI_BOT: Enqueued work for ${threadId.formatted} (timestamp=${timestamp.toEpochMilli})"
-                )
+                _ <- ZIO.logDebug("Enqueued work") @@
+                  LogContext.aiBot @@
+                  LogContext.threadId(threadId) @@
+                  ZIOAspect.annotated("timestamp", timestamp.toEpochMilli.toString)
               } yield ()
         }
     ).mapError(e => EventProcessor.Error.ProcessingFailed(e, name)).as(())
@@ -160,9 +164,9 @@ class AiBotProcessor(
             workersCount <- threadWorkers.get.map(_.size)
             _ <- llmMetrics.setActiveWorkers(workersCount)
 
-            _ <- ZIO.logInfo(
-              s"🤖 AI_BOT: Created new worker for ${threadId.formatted}"
-            )
+            _ <- ZIO.logInfo("Created new worker") @@
+              LogContext.aiBot @@
+              LogContext.threadId(threadId)
           } yield worker
     }
 
@@ -196,9 +200,10 @@ class AiBotProcessor(
               llmMetrics.recordInterruption("superseded_by_newer_message") *>
               tracing.addEvent("llm_interrupted") *>
               tracing.setAttribute("llm.interrupted_reason", "superseded_by_newer_message") *>
-              ZIO.logInfo(
-                s"🤖 AI_BOT: Interrupted LLM for ${threadId.formatted} - superseded during generation"
-              ) *>
+              ZIO.logInfo("Interrupted LLM - superseded during generation") @@
+              LogContext.aiBot @@
+              LogContext.threadId(threadId) @@
+              LogContext.reason("superseded_by_newer_message") *>
               ZIO.succeed(false) // Signal "do not post"
         }
     }
@@ -214,9 +219,10 @@ class AiBotProcessor(
         _ <- tracing.setAttribute("timestamp", timestamp.toEpochMilli.toString)
         _ <- tracing.addEvent("work_dequeued")
 
-        _ <- ZIO.logInfo(
-          s"🤖 AI_BOT: Worker for ${threadId.formatted} dequeued work (timestamp=${timestamp.toEpochMilli})"
-        )
+        _ <- ZIO.logInfo("Worker dequeued work") @@
+          LogContext.aiBot @@
+          LogContext.threadId(threadId) @@
+          ZIOAspect.annotated("timestamp", timestamp.toEpochMilli.toString)
 
         // Start LLM call immediately (no debounce delay!)
         llmFiber <- generateResponse(threadId).fork
@@ -227,9 +233,10 @@ class AiBotProcessor(
           // If monitor fails, interrupt LLM and don't post
           llmFiber.interrupt *>
             llmMetrics.recordInterruption("monitor_error") *>
-            ZIO.logInfo(
-              s"🤖 AI_BOT: Monitor failed for ${threadId.formatted}: ${error.getMessage}"
-            ) *>
+            ZIO.logInfo("Monitor failed") @@
+            LogContext.aiBot @@
+            LogContext.threadId(threadId) @@
+            LogContext.errorType(error.getClass.getSimpleName) *>
             ZIO.succeed(false)
         }
 
@@ -241,9 +248,10 @@ class AiBotProcessor(
                 postResponse(threadId, response)
               }
               .catchAll { error =>
-                ZIO.logError(
-                  s"🤖 AI_BOT: Failed to post response for ${threadId.formatted}: ${error.getMessage}"
-                )
+                ZIO.logError("Failed to post response") @@
+                  LogContext.aiBot @@
+                  LogContext.threadId(threadId) @@
+                  LogContext.errorType(error.getClass.getSimpleName)
               }
           } else {
             // Already interrupted and logged by monitor
@@ -273,7 +281,10 @@ class AiBotProcessor(
       _ <- tracing.setAttribute("llm.model", config.llm.model)
       _ <- tracing.addEvent("llm_request_start")
 
-      _ <- ZIO.logInfo(s"🤖 AI_BOT: Generating response for ${threadId.formatted}")
+      _ <- ZIO.logInfo("Generating response") @@
+        LogContext.aiBot @@
+        LogContext.threadId(threadId) @@
+        LogContext.llmModel(config.llm.model)
 
       // Get full thread history for context
       thread <- messageStore
@@ -296,13 +307,19 @@ class AiBotProcessor(
 
       _ <- tracing.setAttribute("llm.context_messages", allMessages.size.toString)
 
-      _ <- ZIO.logInfo(
-        s"🤖 AI_BOT: Calling LLM (${conversationMessages.size} messages in context)"
-      )
+      _ <- ZIO.logInfo("Calling LLM") @@
+        LogContext.aiBot @@
+        LogContext.threadId(threadId) @@
+        ZIOAspect.annotated("context_messages", conversationMessages.size.toString)
 
       // DIAGNOSTIC: Log conversation being sent to LLM
       _ <- ZIO.foreach(allMessages.zipWithIndex) { case (msg, idx) =>
-        ZIO.logInfo(s"🤖 AI_BOT_CTX[$idx]: ${msg.role} - ${msg.content.take(100)}")
+        ZIO.logInfo("LLM context message") @@
+          LogContext.aiBot @@
+          LogContext.threadId(threadId) @@
+          ZIOAspect.annotated("index", idx.toString) @@
+          ZIOAspect.annotated("role", msg.role.toString) @@
+          ZIOAspect.annotated("content_preview", msg.content.take(100))
       }
 
       // Call LLM (this can take several seconds - interruptible!)
@@ -333,7 +350,11 @@ class AiBotProcessor(
       _ <- tracing.setAttribute("llm.response_length", response.length.toString)
       _ <- tracing.addEvent("llm_request_complete")
 
-      _ <- ZIO.logInfo(s"🤖 AI_BOT: Generated response (${response.length} chars, ${latency}ms)")
+      _ <- ZIO.logInfo("Generated response") @@
+        LogContext.aiBot @@
+        LogContext.threadId(threadId) @@
+        ZIOAspect.annotated("response_chars", response.length.toString) @@
+        LogContext.latency(latency)
 
       // Guard against empty responses
       _ <- ZIO.when(response.trim.isEmpty) {
@@ -364,7 +385,10 @@ class AiBotProcessor(
       }
 
       _ <- tracing.addEvent("slack_message_posted")
-      _ <- ZIO.logInfo(s"🤖 AI_BOT: Posted response to ${threadId.formatted}")
+      _ <- ZIO.logInfo("Posted response") @@
+        LogContext.aiBot @@
+        LogContext.threadId(threadId) @@
+        LogContext.channelId(thread.channelId)
     } yield ()) @@ tracing.aspects.span("slack.post_message")
 
   /** Cleanup fiber: removes idle workers (> 1 hour no activity) */
@@ -391,9 +415,10 @@ class AiBotProcessor(
               _ <- worker.fiber.interrupt
               _ <- threadWorkers.update(_ - threadId)
               _ <- lastProcessedTimestamp.update(_ - threadId)
-              _ <- ZIO.logInfo(
-                s"🤖 AI_BOT: Cleaned up idle worker for ${threadId.formatted} (idle > 1 hour)"
-              )
+              _ <- ZIO.logInfo("Cleaned up idle worker") @@
+                LogContext.aiBot @@
+                LogContext.threadId(threadId) @@
+                LogContext.reason("idle_timeout")
             } yield ()
           case None =>
             ZIO.unit
@@ -404,9 +429,9 @@ class AiBotProcessor(
         for {
           workersCount <- threadWorkers.get.map(_.size)
           _ <- llmMetrics.setActiveWorkers(workersCount)
-          _ <- ZIO.logInfo(
-            s"🤖 AI_BOT: Cleanup complete - removed ${idleWorkers.size} idle workers"
-          )
+          _ <- ZIO.logInfo("Cleanup complete") @@
+            LogContext.aiBot @@
+            ZIOAspect.annotated("workers_removed", idleWorkers.size.toString)
         } yield ()
       }
 
@@ -454,7 +479,8 @@ object AiBotProcessor:
         _ <- processor.cleanupIdleWorkers.forkScoped
 
         _ <- ZIO.logInfo(
-          "🤖 AI_BOT: Processor initialized with per-thread queues (workers auto-cleanup after 1hr idle)"
-        )
+          "Processor initialized with per-thread queues (workers auto-cleanup after 1hr idle)"
+        ) @@
+          LogContext.aiBot
       } yield processor
     }

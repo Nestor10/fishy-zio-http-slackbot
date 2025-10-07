@@ -1,56 +1,69 @@
 package com.nestor10.slackbot.infrastructure.observability
 
 import zio.*
-import zio.telemetry.opentelemetry.metrics.Meter
+import zio.stream.*
+import zio.metrics.*
 import com.nestor10.slackbot.infrastructure.storage.MessageStore
 
-/** OpenTelemetry metrics for MessageStore.
+/** ZIO Runtime metrics for MessageStore.
   *
-  * Uses ObservableGauge (callback-based) for:
-  *   - storage.messages.count: Current message count
-  *   - storage.threads.count: Current thread count
+  * Uses ZIO Metric API with polling gauges for:
+  *   - storage_messages_count: Current message count
+  *   - storage_threads_count: Current thread count
   *
-  * Callbacks query MessageStore directly on each export (every 60s).
+  * Polls MessageStore.stats() every 10 seconds to update gauge values.
+  *
+  * Zionomicon References:
+  *   - Chapter 37: ZIO Metrics (Gauge with polling pattern)
+  *   - Chapter 17: Dependency Injection (layer pattern)
   */
 object StorageMetrics {
 
-  /** Register observable gauges that query MessageStore stats directly.
+  /** Register polling gauges that query MessageStore stats periodically.
     *
-    * This creates two gauges with callbacks that are invoked every 60 seconds by the
-    * PeriodicMetricReader. The callbacks query MessageStore.stats() and record the current values.
+    * This creates two gauges with polling fibers that query MessageStore.stats() every 10 seconds
+    * and update the gauge values. The fibers are scoped and will be cancelled when the scope
+    * closes.
     *
-    * Returns a scoped resource (callbacks are registered until scope closes).
+    * Returns a scoped resource (polling fibers run until scope closes).
     */
-  val live: RIO[Scope & MessageStore & Meter, Unit] =
+  val live: RIO[Scope & MessageStore, Unit] =
     for {
       messageStore <- ZIO.service[MessageStore]
-      meter <- ZIO.service[Meter]
 
-      // Register observable gauge for message count
-      _ <- meter.observableGauge(
-        name = "storage.messages.count",
-        unit = Some("{messages}"),
-        description = Some("Current number of messages stored in MessageStore")
-      ) { observation =>
-        messageStore.stats().flatMap { case (msgCount, _) =>
-          observation.record(msgCount.toDouble)
-        }
-      }
+      // Gauge: Current message count (poll every 10s)
+      _ <- Metric
+        .gauge("storage_messages_count")
+        .set(0.0)
+        .forkDaemon *>
+        ZStream
+          .repeatZIO(
+            messageStore.stats().map { case (msgCount, _) => msgCount.toDouble }
+          )
+          .schedule(Schedule.fixed(10.seconds))
+          .foreach { count =>
+            Metric.gauge("storage_messages_count").set(count)
+          }
+          .forkScoped
 
-      // Register observable gauge for thread count
-      _ <- meter.observableGauge(
-        name = "storage.threads.count",
-        unit = Some("{threads}"),
-        description = Some("Current number of threads tracked in MessageStore")
-      ) { observation =>
-        messageStore.stats().flatMap { case (_, threadCount) =>
-          observation.record(threadCount.toDouble)
-        }
-      }
+      // Gauge: Current thread count (poll every 10s)
+      _ <- Metric
+        .gauge("storage_threads_count")
+        .set(0.0)
+        .forkDaemon *>
+        ZStream
+          .repeatZIO(
+            messageStore.stats().map { case (_, threadCount) => threadCount.toDouble }
+          )
+          .schedule(Schedule.fixed(10.seconds))
+          .foreach { count =>
+            Metric.gauge("storage_threads_count").set(count)
+          }
+          .forkScoped
 
     } yield ()
 
   /** Layer version - provides Unit (metrics are side-effecting registration) */
-  val layer: RLayer[MessageStore & Meter, Unit] =
+  val layer: RLayer[MessageStore, Unit] =
     ZLayer.scoped(live)
 }

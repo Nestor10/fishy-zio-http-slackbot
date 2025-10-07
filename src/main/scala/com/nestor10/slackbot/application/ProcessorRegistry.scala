@@ -3,6 +3,7 @@ package com.nestor10.slackbot.application
 import zio.*
 import com.nestor10.slackbot.domain.processor.EventProcessor
 import com.nestor10.slackbot.domain.service.MessageEventBus
+import com.nestor10.slackbot.infrastructure.observability.LogContext
 
 /** Registry for managing message processors and distributing events.
   *
@@ -40,17 +41,20 @@ object ProcessorRegistry:
 
       override def register(processor: EventProcessor): UIO[Unit] =
         processors.update(_ + processor) *>
-          ZIO.logInfo(s"✅ PROCESSOR_REGISTERED: ${processor.name}")
+          ZIO.logInfo(s"Processor registered: ${processor.name}") @@
+          LogContext.registry
 
       override def unregister(name: String): UIO[Unit] =
         processors.update(_.filterNot(_.name == name)) *>
-          ZIO.logInfo(s"❌ PROCESSOR_UNREGISTERED: $name")
+          ZIO.logInfo(s"Processor unregistered: $name") @@
+          LogContext.registry
 
       override def getProcessors: UIO[Set[EventProcessor]] =
         processors.get
 
       override def startProcessing: IO[Nothing, Fiber.Runtime[Nothing, Unit]] =
-        ZIO.logInfo("🚀 PROCESSOR_REGISTRY: Starting worker fiber") *>
+        ZIO.logInfo("Starting worker fiber") @@
+          LogContext.registry *>
           processEvents.forkDaemon
 
       /** Core event processing loop.
@@ -67,8 +71,8 @@ object ProcessorRegistry:
                 procs <- processors.get
                 matchingProcs = procs.filter(_.canProcess(event))
                 _ <- ZIO.logDebug(
-                  s"📨 EVENT_RECEIVED: ${event.getClass.getSimpleName} -> ${matchingProcs.size} processors"
-                )
+                  s"Event received: ${event.getClass.getSimpleName} -> ${matchingProcs.size} processors"
+                ) @@ LogContext.registry
                 // Process in parallel with error isolation
                 _ <- ZIO.foreachParDiscard(matchingProcs) { processor =>
                   processor
@@ -76,8 +80,9 @@ object ProcessorRegistry:
                     .catchAll { error =>
                       // Log error but don't fail - isolate processor failures
                       ZIO.logError(
-                        s"⚠️ PROCESSOR_ERROR: ${processor.name} - ${error.message}"
-                      )
+                        s"Processor error: ${processor.name} - ${error.message}"
+                      ) @@ LogContext.registry @@
+                        LogContext.errorType(error.getClass.getSimpleName)
                     }
                     .forkDaemon // Fork each processor to prevent blocking
                     .unit
@@ -87,7 +92,8 @@ object ProcessorRegistry:
           }
           .catchAllCause { cause =>
             // Worker fiber should never die - log and restart
-            ZIO.logErrorCause(s"💥 PROCESSOR_WORKER_DIED: Restarting...", cause) *>
+            ZIO.logErrorCause("Processor worker died - restarting", cause) @@
+              LogContext.registry *>
               processEvents
           }
 

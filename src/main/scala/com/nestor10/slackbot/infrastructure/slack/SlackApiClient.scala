@@ -6,6 +6,7 @@ import zio.json._
 import zio.telemetry.opentelemetry.tracing.Tracing
 import com.nestor10.slackbot.conf.AppConfig
 import com.nestor10.slackbot.domain.model.conversation.{ChannelId, ThreadId, MessageId}
+import com.nestor10.slackbot.infrastructure.observability.LogContext
 
 /** Slack API client with just enough to open a Socket Mode connection via apps.connections.open */
 trait SlackApiClient {
@@ -272,7 +273,11 @@ object SlackApiClient {
           _ <- tracing.setAttribute("slack.message_ts", ts)
           _ <- tracing.addEvent("slack_api_response_received")
 
-          _ <- ZIO.logInfo(s"✅ Posted message with ts=$ts")
+          _ <- ZIO.logInfo("Posted message") @@
+            LogContext.slackApi @@
+            ZIOAspect.annotated("message_ts", ts) @@
+            ZIOAspect.annotated("api_method", "chat.postMessage") @@
+            ZIOAspect.annotated("latency_ms", latency.toString)
         } yield ts) @@ tracing.aspects.span("slack.api.post_message")).mapError {
           case e: Error     => e
           case t: Throwable => DecodeError(s"Request failed: ${t.getMessage}", t.toString)
@@ -310,7 +315,12 @@ object SlackApiClient {
           _ <- tracing.setAttribute("slack.bot.username", parsed.user)
           _ <- tracing.addEvent("slack_api_response_received")
 
-          _ <- ZIO.logInfo(s"✅ auth.test success: user_id=${parsed.user_id} user=${parsed.user}")
+          _ <- ZIO.logInfo("auth.test success") @@
+            LogContext.slackApi @@
+            ZIOAspect.annotated("user_id", parsed.user_id) @@
+            ZIOAspect.annotated("username", parsed.user) @@
+            ZIOAspect.annotated("api_method", "auth.test") @@
+            ZIOAspect.annotated("latency_ms", latency.toString)
         } yield parsed) @@ tracing.aspects.span("slack.api.auth_test")).mapError {
           case e: Error     => e
           case t: Throwable => DecodeError(s"Request failed: ${t.getMessage}", t.toString)

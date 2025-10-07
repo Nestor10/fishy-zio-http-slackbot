@@ -2,6 +2,7 @@ package com.nestor10.slackbot.infrastructure.slack
 
 import zio.*
 import com.nestor10.slackbot.domain.model.conversation.{BotIdentity, UserId}
+import com.nestor10.slackbot.infrastructure.observability.LogContext
 
 /** Service for managing bot's own identity.
   *
@@ -35,7 +36,10 @@ object BotIdentityService:
           // Not cached yet - fetch from Slack API
           ZIO.scoped {
             for {
-              _ <- ZIO.logInfo("🤖 BOT_IDENTITY: Fetching bot identity from Slack API...")
+              _ <- ZIO.logInfo("Fetching bot identity from Slack API") @@
+                LogContext.slackApi @@
+                LogContext.operation("fetch_bot_identity") @@
+                ZIOAspect.annotated("cache_status", "miss")
 
               response <- slackClient.authTest
                 .mapError(e => SlackApiError(s"Failed to fetch bot identity: ${e.getMessage}"))
@@ -48,9 +52,11 @@ object BotIdentityService:
 
               _ <- cachedIdentity.set(Some(identity))
 
-              _ <- ZIO.logInfo(
-                s"✅ BOT_IDENTITY: Cached bot identity - userId=${identity.userId.value} username=${identity.username}"
-              )
+              _ <- ZIO.logInfo("Cached bot identity") @@
+                LogContext.slackApi @@
+                LogContext.operation("cache_bot_identity") @@
+                ZIOAspect.annotated("user_id", identity.userId.value) @@
+                ZIOAspect.annotated("username", identity.username)
 
             } yield identity
           }
@@ -76,11 +82,15 @@ object BotIdentityService:
           service = Live(client, cache)
 
           // Eagerly fetch bot identity at startup - FAIL FAST if this fails
-          _ <- ZIO.logInfo("🤖 BOT_IDENTITY: Fetching bot identity at startup (fail-fast)...")
+          _ <- ZIO.logInfo("Fetching bot identity at startup (fail-fast)") @@
+            LogContext.slackApi @@
+            LogContext.operation("startup_bot_identity_fetch")
           identity <- service.getBotIdentity
-          _ <- ZIO.logInfo(
-            s"✅ BOT_IDENTITY: Startup fetch complete - userId=${identity.userId.value} username=${identity.username}"
-          )
+          _ <- ZIO.logInfo("Startup fetch complete") @@
+            LogContext.slackApi @@
+            LogContext.operation("startup_bot_identity_complete") @@
+            ZIOAspect.annotated("user_id", identity.userId.value) @@
+            ZIOAspect.annotated("username", identity.username)
 
         } yield service
       }

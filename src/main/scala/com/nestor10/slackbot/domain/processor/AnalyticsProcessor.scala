@@ -2,6 +2,7 @@ package com.nestor10.slackbot.domain.processor
 
 import zio.*
 import com.nestor10.slackbot.domain.service.MessageEventBus.MessageEvent
+import com.nestor10.slackbot.infrastructure.observability.LogContext
 
 /** Analytics processor for tracking metrics and statistics.
   *
@@ -32,19 +33,27 @@ class AnalyticsProcessor(
     event match
       case MessageEvent.ThreadCreated(thread, _) =>
         threadsCreated.update(_ + 1) *>
-          ZIO.logInfo(s"📊 ANALYTICS: Thread created - total: ${thread.id.formatted}")
+          ZIO.logInfo("Thread created") @@
+          LogContext.analytics @@
+          LogContext.threadId(thread.id)
 
       case MessageEvent.MessageStored(message, _) =>
         messagesStored.update(_ + 1) *>
-          ZIO.logInfo(s"📊 ANALYTICS: Message stored in thread ${message.threadId.formatted}")
+          ZIO.logInfo("Message stored") @@
+          LogContext.analytics @@
+          LogContext.threadId(message.threadId)
 
       case MessageEvent.ThreadUpdated(thread, _) =>
         threadsUpdated.update(_ + 1) *>
-          ZIO.logInfo(s"📊 ANALYTICS: Thread updated - ${thread.id.formatted}")
+          ZIO.logInfo("Thread updated") @@
+          LogContext.analytics @@
+          LogContext.threadId(thread.id)
 
       case MessageEvent.MessageUpdated(messageId, _, _, _) =>
         messagesUpdated.update(_ + 1) *>
-          ZIO.logInfo(s"📊 ANALYTICS: Message updated - ${messageId.formatted}")
+          ZIO.logInfo("Message updated") @@
+          LogContext.analytics @@
+          LogContext.messageId(messageId)
 
       /** Get current statistics */
   def getStats: UIO[(Long, Long, Long, Long)] =

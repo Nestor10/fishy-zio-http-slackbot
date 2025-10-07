@@ -2,6 +2,7 @@ package com.nestor10.slackbot.domain.processor
 
 import zio.*
 import com.nestor10.slackbot.domain.service.MessageEventBus.MessageEvent
+import com.nestor10.slackbot.infrastructure.observability.LogContext
 
 /** Notification processor for sending alerts and notifications.
   *
@@ -25,9 +26,9 @@ class NotificationProcessor extends EventProcessor:
   override def process(event: MessageEvent): IO[EventProcessor.Error, Unit] =
     event match
       case MessageEvent.ThreadCreated(thread, timestamp) =>
-        ZIO.logInfo(
-          s"📬 NOTIFICATION: Would send alert for new thread ${thread.id.formatted} at $timestamp"
-        )
+        ZIO.logInfo("Would send alert for new thread") @@
+          LogContext.notifications @@
+          LogContext.threadId(thread.id)
 
       case _ =>
         ZIO.unit

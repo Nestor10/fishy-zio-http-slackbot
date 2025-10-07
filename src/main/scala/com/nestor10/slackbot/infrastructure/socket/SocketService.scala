@@ -17,6 +17,7 @@ import com.nestor10.slackbot.domain.model.slack.{
   InteractiveMessage,
   SlashCommand
 }
+import com.nestor10.slackbot.infrastructure.observability.LogContext
 
 import java.time.{Duration, Instant}
 
@@ -76,17 +77,24 @@ object SocketService {
               _ <- sharedStateRef.update(_ + (socketId -> initialState))
 
               // Log connection attempt with debug info
-              _ <- ZIO.logInfo(s"🔌 WEBSOCKET_CONNECTING: socket=$socketId debug=$debugReconnects")
+              _ <- ZIO.logInfo(s"WebSocket connecting - debug=$debugReconnects") @@
+                LogContext.socket @@
+                LogContext.connectionId(socketId.value)
 
               // Simple single ping effect (no sleep here!)
               singlePing = for {
-                _ <- ZIO.logDebug(s"Socket $socketId: Sending WebSocket")
+                _ <- ZIO.logDebug("Sending WebSocket ping") @@
+                  LogContext.socket @@
+                  LogContext.connectionId(socketId.value)
 
                 _ <- channel.send(Read(WebSocketFrame.Ping)).catchAll { error =>
                   val errorCategory = categorizeNetworkError(error)
                   ZIO.logError(
-                    s"Socket $socketId: PING_FAILED category=$errorCategory error=${error.getMessage}"
-                  )
+                    s"Ping failed - category=$errorCategory error=${error.getMessage}"
+                  ) @@
+                    LogContext.socket @@
+                    LogContext.connectionId(socketId.value) @@
+                    LogContext.errorType(errorCategory)
                 }
               } yield ()
 
@@ -95,14 +103,21 @@ object SocketService {
 
               _ <- channel.receiveAll {
                 case UserEventTriggered(UserEvent.HandshakeComplete) =>
-                  ZIO.logInfo(s"Socket $socketId: Handshake complete. Starting ping fiber.") *>
+                  ZIO.logInfo("Handshake complete - starting ping fiber") @@
+                    LogContext.socket @@
+                    LogContext.connectionId(socketId.value) *>
                     pingEffect.fork
                 case Read(WebSocketFrame.Text(x)) =>
-                  ZIO.logDebug(s"Received WebSocket text: $x") *>
+                  ZIO.logDebug(s"Received WebSocket text: $x") @@
+                    LogContext.socket @@
+                    LogContext.connectionId(socketId.value) *>
                     ZIO
                       .fromEither(x.fromJson[SlackSocketMessage])
                       .foldZIO(
-                        error => ZIO.logError(s"Failed to parse SlackSocketMessage: $error"),
+                        error =>
+                          ZIO.logError(s"Failed to parse SlackSocketMessage: $error") @@
+                            LogContext.socket @@
+                            LogContext.connectionId(socketId.value),
                         message =>
                           message match
                             case eventsApiMessage: EventsApiMessage =>
@@ -114,7 +129,9 @@ object SocketService {
                                 inboundQueue.offer(eventsApiMessage) *>
                                 ZIO.logInfo(
                                   s"Event acknowledged and queued: ${eventsApiMessage.envelope_id}"
-                                )
+                                ) @@
+                                LogContext.socket @@
+                                LogContext.connectionId(socketId.value)
                             case hello: Hello =>
                               // Update shared state with approximate connection time from hello
                               updateSharedState(state =>
@@ -128,8 +145,10 @@ object SocketService {
                                 )
                               ) *>
                                 ZIO.logInfo(
-                                  s"Socket $socketId: Received hello message - connection established"
-                                )
+                                  "Received hello message - connection established"
+                                ) @@
+                                LogContext.socket @@
+                                LogContext.connectionId(socketId.value)
                             case disconnect: Disconnect =>
                               // Handle different types of disconnect messages
                               val (newIsDisconnected, newIsWarned) = disconnect.reason match {
@@ -143,8 +162,11 @@ object SocketService {
                                 )
                               ) *>
                                 ZIO.logWarning(
-                                  s"Socket $socketId: Received disconnect: ${disconnect.reason} -> isDisconnected: $newIsDisconnected, isWarned: $newIsWarned"
-                                )
+                                  s"Received disconnect: ${disconnect.reason} -> isDisconnected: $newIsDisconnected, isWarned: $newIsWarned"
+                                ) @@
+                                LogContext.socket @@
+                                LogContext.connectionId(socketId.value) @@
+                                LogContext.reason(disconnect.reason)
                             case interactive: InteractiveMessage =>
                               // Send acknowledgment for interactive messages
                               val ack = AckResponse(interactive.envelope_id)
@@ -154,7 +176,9 @@ object SocketService {
                                 inboundQueue.offer(interactive) *>
                                 ZIO.logInfo(
                                   s"Interactive message acknowledged and queued: ${interactive.envelope_id}"
-                                )
+                                ) @@
+                                LogContext.socket @@
+                                LogContext.connectionId(socketId.value)
                             case slashCommand: SlashCommand =>
                               // Send acknowledgment for slash commands
                               val ack = AckResponse(slashCommand.envelope_id)
@@ -164,23 +188,31 @@ object SocketService {
                                 inboundQueue.offer(slashCommand) *>
                                 ZIO.logInfo(
                                   s"Slash command acknowledged and queued: ${slashCommand.envelope_id}"
-                                )
+                                ) @@
+                                LogContext.socket @@
+                                LogContext.connectionId(socketId.value)
                       )
                 case Read(WebSocketFrame.Close(status, reason)) =>
                   // Update shared state to closed on WebSocket close
                   updateSharedState(state => state.copy(isDisconnected = true, isWarned = false)) *>
                     ZIO.logInfo(
-                      s"Socket $socketId: WebSocket close received: status=$status, reason=$reason"
-                    )
+                      s"WebSocket close received: status=$status, reason=$reason"
+                    ) @@
+                    LogContext.socket @@
+                    LogContext.connectionId(socketId.value)
                 case Read(WebSocketFrame.Ping) =>
-                  ZIO.logInfo(s"Socket $socketId: Received WebSocket ping frame") *>
+                  ZIO.logInfo("Received WebSocket ping frame") @@
+                    LogContext.socket @@
+                    LogContext.connectionId(socketId.value) *>
                     // Automatically respond with pong containing the same data
                     channel.send(Read(WebSocketFrame.Pong))
                 case Read(WebSocketFrame.Pong) =>
                   updateSharedState(state =>
                     state.copy(lastPongReceivedAt = Some(Instant.now()))
                   ) *>
-                    ZIO.logDebug(s"Socket $socketId: Received WebSocket pong frame")
+                    ZIO.logDebug("Received WebSocket pong frame") @@
+                    LogContext.socket @@
+                    LogContext.connectionId(socketId.value)
                 case _ => ZIO.unit
               }
             } yield ()
@@ -200,7 +232,9 @@ object SocketService {
           sharedStateRef: Ref[Map[SocketId, SocketConnectionState]]
       ): WebSocketApp[InboundQueue] =
         Handler.webSocket { channel =>
-          ZIO.logInfo(s"🔌 STUB: WebSocket handler created for socket $socketId") *>
+          ZIO.logInfo("STUB: WebSocket handler created") @@
+            LogContext.socket @@
+            LogContext.connectionId(socketId.value) *>
             // Initialize stub state in shared ref
             sharedStateRef.update(
               _ + (socketId -> SocketConnectionState(
@@ -212,7 +246,9 @@ object SocketService {
               ))
             ) *>
             channel.receiveAll { case _ =>
-              ZIO.logDebug(s"🔌 STUB: Socket $socketId received WebSocket frame")
+              ZIO.logDebug("STUB: Socket received WebSocket frame") @@
+                LogContext.socket @@
+                LogContext.connectionId(socketId.value)
             }
         }
     }

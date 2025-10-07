@@ -23,6 +23,7 @@ import com.nestor10.slackbot.domain.model.conversation.{
   BotIdentity,
   UserId
 }
+import com.nestor10.slackbot.infrastructure.observability.LogContext
 import java.time.Instant
 import com.nestor10.slackbot.infrastructure.storage.MessageStore
 import com.nestor10.slackbot.infrastructure.slack.BotIdentityService
@@ -65,8 +66,12 @@ object SlackEventOrchestrator:
         ZIO.scoped {
           for {
             _ <- ZIO.logInfo(
-              s"🔄 THREAD_RECOVERY: Fetching thread ${threadId.formatted} from Slack API"
-            )
+              s"Fetching thread ${threadId.formatted} from Slack API"
+            ) @@
+              LogContext.orchestrator @@
+              LogContext.threadId(threadId) @@
+              LogContext.channelId(channelId) @@
+              LogContext.operation("thread_recovery")
             botIdentity <- botIdentityService.getBotIdentity.orDie
             response <- slackApiClient
               .getConversationReplies(channelId, threadId)
@@ -102,8 +107,11 @@ object SlackEventOrchestrator:
                 )
             }
             _ <- ZIO.logInfo(
-              s"✅ THREAD_RECOVERED: id=${threadId.formatted} with ${messages.size} messages from Slack"
-            )
+              s"Thread recovered with ${messages.size} messages from Slack"
+            ) @@
+              LogContext.orchestrator @@
+              LogContext.threadId(threadId) @@
+              LogContext.operation("thread_recovery")
           } yield thread
         }
 
@@ -133,13 +141,19 @@ object SlackEventOrchestrator:
                 case None =>
                   // Slow path: Thread not in memory, try to recover from Slack
                   ZIO.logInfo(
-                    s"🔍 THREAD_NOT_IN_MEMORY: Attempting recovery for ${threadId.formatted}"
-                  ) *>
+                    s"Thread not in memory - attempting recovery for ${threadId.formatted}"
+                  ) @@
+                    LogContext.orchestrator @@
+                    LogContext.threadId(threadId) @@
+                    LogContext.operation("thread_recovery") *>
                     recoverThreadFromSlack(channelId, threadId)
                       .tapError(err =>
                         ZIO.logWarning(
-                          s"⚠️ THREAD_RECOVERY_FAILED: ${err.getMessage} - skipping message"
-                        )
+                          s"Thread recovery failed: ${err.getMessage} - skipping message"
+                        ) @@
+                          LogContext.orchestrator @@
+                          LogContext.threadId(threadId) @@
+                          LogContext.errorType(err.getClass.getSimpleName)
                       )
                       .option // Convert failure to None
               }
@@ -154,11 +168,18 @@ object SlackEventOrchestrator:
                     .store(threadMessage)
                     .flatMap { msgId =>
                       ZIO.logInfo(
-                        s"💾 THREAD_REPLY_STORED: thread=${threadId.formatted} message=${msgId.formatted} author=${threadMessage.author.value} channel_type=$channelType"
-                      )
+                        s"Thread reply stored - message=${msgId.formatted} author=${threadMessage.author.value} channel_type=$channelType"
+                      ) @@
+                        LogContext.orchestrator @@
+                        LogContext.threadId(threadId) @@
+                        LogContext.messageId(msgId) @@
+                        LogContext.userId(threadMessage.author)
                     }
                     .tapError(error =>
-                      ZIO.logError(s"❌ FAILED_TO_STORE_REPLY: ${error.getMessage}")
+                      ZIO.logError(s"Failed to store reply: ${error.getMessage}") @@
+                        LogContext.orchestrator @@
+                        LogContext.threadId(threadId) @@
+                        LogContext.errorType(error.getClass.getSimpleName)
                     )
                     .catchAll(_ => ZIO.unit) // Continue even if storage fails
                 case None =>
@@ -174,7 +195,8 @@ object SlackEventOrchestrator:
       override def processMessage(message: BusinessMessage): UIO[BusinessMessage] =
         message match {
           case event: EventsApiMessage =>
-            ZIO.logInfo(s"📢 EventsApiMessage: ${event.payload.`type`}") *>
+            ZIO.logInfo(s"EventsApiMessage: ${event.payload.`type`}") @@
+              LogContext.orchestrator *>
               processEventsApiMessage(event)
           case interactive: InteractiveMessage =>
             processInteractiveMessage(interactive)
@@ -187,10 +209,14 @@ object SlackEventOrchestrator:
         event.payload.event match {
           case appMention: AppMention =>
             ZIO.logInfo(
-              s"📢 APP_MENTION: envelope=${event.envelope_id} user=${appMention.user} channel=${appMention.channel} thread=${appMention.thread_ts
+              s"App mention - envelope=${event.envelope_id} user=${appMention.user} channel=${appMention.channel} thread=${appMention.thread_ts
                   .getOrElse("new")}"
-            ) *>
-              ZIO.logInfo(s"📢 APP_MENTION_TEXT: ${appMention.text}") *> {
+            ) @@
+              LogContext.orchestrator @@
+              LogContext.userId(UserId(appMention.user)) @@
+              LogContext.channelId(ChannelId(appMention.channel)) *>
+              ZIO.logInfo(s"App mention text: ${appMention.text}") @@
+              LogContext.orchestrator *> {
 
                 // Use domain model to determine if we should act on this mention
                 val channelId = ChannelId(appMention.channel)
@@ -203,36 +229,49 @@ object SlackEventOrchestrator:
                     Thread.fromAppMention(appMention, channelId, botIdentity) match {
                       case Some(thread) =>
                         ZIO.logInfo(
-                          s"🆕 NEW_THREAD_CREATED: id=${thread.id.formatted} channel=${channelId.value}"
-                        ) *>
+                          s"New thread created - id=${thread.id.formatted} channel=${channelId.value}"
+                        ) @@
+                          LogContext.orchestrator @@
+                          LogContext.threadId(thread.id) @@
+                          LogContext.channelId(channelId) *>
                           // Store the thread in MessageStore
                           messageStore
                             .storeThread(thread)
                             .tapError(error =>
-                              ZIO.logError(s"❌ FAILED_TO_STORE_THREAD: ${error.getMessage}")
+                              ZIO.logError(s"Failed to store thread: ${error.getMessage}") @@
+                                LogContext.orchestrator @@
+                                LogContext.threadId(thread.id) @@
+                                LogContext.errorType(error.getClass.getSimpleName)
                             )
                             .catchAll(_ => ZIO.unit) // Log error but don't fail message processing
                           *>
                           ZIO.logInfo(
-                            s"💾 THREAD_STORED: id=${thread.id.formatted}"
-                          ) *>
+                            s"Thread stored - id=${thread.id.formatted}"
+                          ) @@
+                          LogContext.orchestrator @@
+                          LogContext.threadId(thread.id) *>
                           // Phase 7b: MessageStore now publishes ThreadCreated event (Option 2)
                           // Verify storage by retrieving what we just stored
                           messageStore
                             .retrieveThread(thread.id)
                             .flatMap { retrievedThread =>
                               ZIO.logInfo(
-                                s"✅ STORAGE_VERIFIED: Retrieved thread ${retrievedThread.id.formatted}"
-                              )
+                                s"Storage verified - retrieved thread ${retrievedThread.id.formatted}"
+                              ) @@
+                                LogContext.orchestrator @@
+                                LogContext.threadId(retrievedThread.id)
                             }
                             .tapError(error =>
-                              ZIO.logError(s"⚠️ STORAGE_VERIFICATION_FAILED: ${error.getMessage}")
+                              ZIO.logError(s"Storage verification failed: ${error.getMessage}") @@
+                                LogContext.orchestrator @@
+                                LogContext.errorType(error.getClass.getSimpleName)
                             )
                             .catchAll(_ => ZIO.unit) *>
                           ZIO.succeed(event)
 
                       case None =>
-                        ZIO.logInfo(s"❌ THREAD_MENTION_DISCARDED: mention in existing thread") *>
+                        ZIO.logInfo("Thread mention discarded - mention in existing thread") @@
+                          LogContext.orchestrator *>
                           // This mention was in an existing thread - we ignore it per bot behavior
                           ZIO.succeed(event)
                     }
@@ -245,20 +284,27 @@ object SlackEventOrchestrator:
 
             // Log the message with appropriate icon based on channel type and thread status
             val isReply = message.thread_ts.isDefined
-            val logIcon = message.channel_type match {
-              case "im"    => if (isReply) "🧵 DM_THREAD_REPLY" else "📩 DIRECT_MESSAGE"
-              case "group" => if (isReply) "🧵 GROUP_THREAD_REPLY" else "👥 GROUP_MESSAGE"
-              case "mpim"  => if (isReply) "🧵 MPIM_THREAD_REPLY" else "👥 MULTI_PERSON_IM"
-              case _       => if (isReply) "🧵 THREAD_REPLY" else "� CHANNEL_MESSAGE"
+            val messageType = message.channel_type match {
+              case "im"    => if (isReply) "dm_thread_reply" else "direct_message"
+              case "group" => if (isReply) "group_thread_reply" else "group_message"
+              case "mpim"  => if (isReply) "mpim_thread_reply" else "multi_person_im"
+              case _       => if (isReply) "thread_reply" else "channel_message"
             }
 
             ZIO.logInfo(
-              s"$logIcon: envelope=${event.envelope_id} user=${message.user
+              s"Message received - type=$messageType envelope=${event.envelope_id} user=${message.user
                   .getOrElse("unknown")} channel=${message.channel}"
-            ) *>
-              message.text.fold(ZIO.unit)(text => ZIO.logInfo(s"� MESSAGE_TEXT: $text")) *>
+            ) @@
+              LogContext.orchestrator @@
+              LogContext.channelId(ChannelId(message.channel)) @@
+              LogContext.operation(messageType) *>
+              message.text.fold(ZIO.unit)(text =>
+                ZIO.logInfo(s"Message text: $text") @@ LogContext.orchestrator
+              ) *>
               message.thread_ts.fold(ZIO.unit)(threadTs =>
-                ZIO.logInfo(s"🧵 THREAD_TS: $threadTs")
+                ZIO.logInfo(s"Thread TS: $threadTs") @@
+                  LogContext.orchestrator @@
+                  LogContext.threadId(ThreadId(threadTs))
               ) *>
               // Handle thread reply storage (identical logic for all channel types)
               handleThreadReply(message, message.channel_type, event.envelope_id) *>
@@ -266,55 +312,65 @@ object SlackEventOrchestrator:
 
           case reactionAdded: ReactionAdded =>
             ZIO.logInfo(
-              s"👍 REACTION_ADDED: envelope=${event.envelope_id} user=${reactionAdded.user} reaction=${reactionAdded.reaction}"
-            ) *>
+              s"Reaction added - envelope=${event.envelope_id} user=${reactionAdded.user} reaction=${reactionAdded.reaction}"
+            ) @@
+              LogContext.orchestrator @@
+              LogContext.userId(UserId(reactionAdded.user)) *>
               // Handle reaction - analytics, gamification, etc.
               // TODO: Add reaction tracking, engagement metrics, etc.
               ZIO.succeed(event)
 
           case channelCreated: ChannelCreated =>
             ZIO.logInfo(
-              s"🆕 CHANNEL_CREATED: envelope=${event.envelope_id} channel=${channelCreated.channel.name}"
-            ) *>
+              s"Channel created - envelope=${event.envelope_id} channel=${channelCreated.channel.name}"
+            ) @@
+              LogContext.orchestrator *>
               // Handle new channel - auto-join bot, welcome message, etc.
               // TODO: Add channel setup, permissions check, etc.
               ZIO.succeed(event)
 
           case teamJoin: TeamJoin =>
             ZIO.logInfo(
-              s"👋 TEAM_JOIN: envelope=${event.envelope_id} user=${teamJoin.user}"
-            ) *>
+              s"Team join - envelope=${event.envelope_id} user=${teamJoin.user}"
+            ) @@
+              LogContext.orchestrator @@
+              LogContext.userId(UserId(teamJoin.user)) *>
               // Handle new team member - onboarding, welcome, etc.
               // TODO: Add user onboarding, welcome DM, etc.
               ZIO.succeed(event)
 
           case appHomeOpened: AppHomeOpened =>
             ZIO.logInfo(
-              s"🏠 APP_HOME_OPENED: envelope=${event.envelope_id} user=${appHomeOpened.user} tab=${appHomeOpened.tab}"
-            ) *>
+              s"App home opened - envelope=${event.envelope_id} user=${appHomeOpened.user} tab=${appHomeOpened.tab}"
+            ) @@
+              LogContext.orchestrator @@
+              LogContext.userId(UserId(appHomeOpened.user)) *>
               // Handle app home visit - show personalized content
               // TODO: Add personalized home view, user stats, etc.
               ZIO.succeed(event)
 
           case unknown: UnknownEvent =>
             ZIO.logInfo(
-              s"❓ UNKNOWN_EVENT: envelope=${event.envelope_id} type=${unknown.`type`}"
-            ) *>
+              s"Unknown event - envelope=${event.envelope_id} type=${unknown.`type`}"
+            ) @@
+              LogContext.orchestrator *>
               // Log unknown events for debugging
               // TODO: Add telemetry for unknown event types
               ZIO.succeed(event)
 
           case other =>
             ZIO.logInfo(
-              s"📨 OTHER_EVENT: envelope=${event.envelope_id} type=${other.getClass.getSimpleName}"
-            ) *>
+              s"Other event - envelope=${event.envelope_id} type=${other.getClass.getSimpleName}"
+            ) @@
+              LogContext.orchestrator *>
               // Handle other event types generically
               // TODO: Add generic event handling, logging, etc.
               ZIO.succeed(event)
         }
 
       private def processInteractiveMessage(interactive: InteractiveMessage): UIO[BusinessMessage] =
-        ZIO.logInfo(s"🔘 INBOUND_INTERACTIVE: envelope=${interactive.envelope_id}") *>
+        ZIO.logInfo(s"Inbound interactive message - envelope=${interactive.envelope_id}") @@
+          LogContext.orchestrator *>
           // Interactive message pipeline:
           // - Parse interaction
           // - Generate response
@@ -323,7 +379,8 @@ object SlackEventOrchestrator:
           ZIO.succeed(interactive)
 
       private def processSlashCommand(slash: SlashCommand): UIO[BusinessMessage] =
-        ZIO.logInfo(s"⚡ INBOUND_SLASH: envelope=${slash.envelope_id}") *>
+        ZIO.logInfo(s"Inbound slash command - envelope=${slash.envelope_id}") @@
+          LogContext.orchestrator *>
           // Command processing pipeline:
           // - Parse command
           // - Execute business logic
@@ -355,8 +412,9 @@ object SlackEventOrchestrator:
       ZIO.succeed(new SlackEventOrchestrator {
         override def processMessage(message: BusinessMessage): UIO[BusinessMessage] =
           ZIO.logInfo(
-            s"📡 STUB: SlackEventOrchestrator.processMessage called for ${message.getClass.getSimpleName}"
-          ) *>
+            s"STUB: SlackEventOrchestrator.processMessage called for ${message.getClass.getSimpleName}"
+          ) @@
+            LogContext.orchestrator *>
             ZIO.succeed(message)
       })
     }

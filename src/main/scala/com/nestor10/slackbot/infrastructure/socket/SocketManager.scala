@@ -7,7 +7,7 @@ import com.nestor10.slackbot.conf.AppConfig
 import com.nestor10.slackbot.infrastructure.slack.SlackApiClient
 import com.nestor10.slackbot.domain.model.socket.{SocketId, SocketConnectionState, InboundQueue}
 import com.nestor10.slackbot.domain.model.slack.BusinessMessage
-import com.nestor10.slackbot.infrastructure.observability.SocketMetrics
+import com.nestor10.slackbot.infrastructure.observability.{SocketMetrics, LogContext}
 import java.util.concurrent.TimeUnit
 
 trait SocketManager:
@@ -71,15 +71,17 @@ object SocketManager:
               ZIO.never.interruptible
           }
           .catchAll { e =>
-            ZIO.logError(s"Socket $id connection failed: ${e.getMessage}")
+            ZIO.logError(s"Socket connection failed: ${e.getMessage}") @@
+              LogContext.socketManager @@
+              LogContext.connectionId(id.value)
           }
           .unit
 
       override def startManager(): UIO[Unit] = {
         val managementLoop = for {
           _ <- ZIO.logInfo(
-            s"🔌 SOCKET_MANAGER: Starting with desired socket count: ${cfg.socketCount}"
-          )
+            s"Starting with desired socket count: ${cfg.socketCount}"
+          ) @@ LogContext.socketManager
 
           // Management loop
           _ <- (for {
@@ -90,8 +92,8 @@ object SocketManager:
             }
 
             _ <- ZIO.logDebug(
-              s"📊 SOCKET_MANAGER: Current healthy connections: ${healthyConnections.size}/${cfg.socketCount}"
-            )
+              s"Current healthy connections: ${healthyConnections.size}/${cfg.socketCount}"
+            ) @@ LogContext.socketManager
 
             // 2. Close and remove disconnected sockets
             unhealthyConnections = currentConnections.filterNot { case (_, state) =>
@@ -119,17 +121,25 @@ object SocketManager:
                       // Record connection closed event
                       socketMetrics.recordConnectionClosed(socketId.value, "unhealthy", duration) *>
                         ZIO.logInfo(
-                          s"🔌 SOCKET_MANAGER: Interrupting unhealthy socket $socketId"
-                        ) *>
+                          s"Interrupting unhealthy socket"
+                        ) @@
+                        LogContext.socketManager @@
+                        LogContext.connectionId(socketId.value) *>
                         fiber.interrupt.timeout(2.seconds).flatMap {
                           case Some(_) =>
-                            ZIO.logDebug(s"🔌 Socket $socketId fiber interrupted successfully")
+                            ZIO.logDebug("Socket fiber interrupted successfully") @@
+                              LogContext.socketManager @@
+                              LogContext.connectionId(socketId.value)
                           case None =>
-                            ZIO.logWarning(s"🔌 Socket $socketId fiber interrupt timed out")
+                            ZIO.logWarning("Socket fiber interrupt timed out") @@
+                              LogContext.socketManager @@
+                              LogContext.connectionId(socketId.value)
                         }
                     }
                   case None =>
-                    ZIO.logWarning(s"🔌 No fiber found for unhealthy socket $socketId")
+                    ZIO.logWarning("No fiber found for unhealthy socket") @@
+                      LogContext.socketManager @@
+                      LogContext.connectionId(socketId.value)
                 }
               }
             }
@@ -144,8 +154,8 @@ object SocketManager:
 
             _ <- ZIO.when(unhealthyConnections.nonEmpty) {
               ZIO.logInfo(
-                s"🗑️ SOCKET_MANAGER: Closed and removed ${unhealthyConnections.size} unhealthy socket(s)"
-              )
+                s"Closed and removed ${unhealthyConnections.size} unhealthy socket(s)"
+              ) @@ LogContext.socketManager
             }
 
             // 4. Calculate additional sockets needed
@@ -154,8 +164,8 @@ object SocketManager:
             // 5. Start additional sockets if needed
             _ <- ZIO.when(socketsNeeded > 0) {
               ZIO.logInfo(
-                s"🔌 SOCKET_MANAGER: Need to start $socketsNeeded additional socket(s)"
-              ) *>
+                s"Need to start $socketsNeeded additional socket(s)"
+              ) @@ LogContext.socketManager *>
                 ZIO.foreachDiscard(1 to socketsNeeded) { i =>
                   val socketId = SocketId(s"socket-${java.lang.System.currentTimeMillis()}-$i")
                   startSocket(socketId)
@@ -165,7 +175,9 @@ object SocketManager:
             // 6. Log current status
             _ <- getAllConnectionStates.flatMap { states =>
               ZIO.foreachDiscard(states) { case (id, state) =>
-                ZIO.logDebug(s"📊 SOCKET_STATE: ${id.value} -> ${state.status}")
+                ZIO.logDebug(s"${id.value} -> ${state.status}") @@
+                  LogContext.socketManager @@
+                  LogContext.operation("socket_state")
               }
             }
 
@@ -185,13 +197,17 @@ object SocketManager:
           baseUrl = wsResponse.url
           finalUrl =
             if (cfg.debugReconnects) {
-              ZIO.logInfo(s"🔌 Enabling debug reconnects for socket $socketId") *>
+              ZIO.logInfo("Enabling debug reconnects") @@
+                LogContext.socketManager @@
+                LogContext.connectionId(socketId.value) *>
                 ZIO.succeed(s"$baseUrl&debug_reconnects=true")
             } else {
               ZIO.succeed(baseUrl)
             }
           url <- finalUrl
-          _ <- ZIO.logInfo(s"🔌 SOCKET_MANAGER: Starting socket $socketId with URL $url")
+          _ <- ZIO.logInfo(s"Starting socket with URL $url") @@
+            LogContext.socketManager @@
+            LogContext.connectionId(socketId.value)
 
           // Record connection started event
           _ <- socketMetrics.recordConnectionStarted(socketId.value)
@@ -200,7 +216,9 @@ object SocketManager:
             .provideEnvironment(ZEnvironment(inboundQueue, client))
             .fork
           _ <- connectionFibersRef.update(_ + (socketId -> fiber))
-          _ <- ZIO.logInfo(s"🔌 SOCKET_MANAGER: Socket $socketId started successfully")
+          _ <- ZIO.logInfo("Socket started successfully") @@
+            LogContext.socketManager @@
+            LogContext.connectionId(socketId.value)
         } yield ()).catchAll { e =>
           // Categorize and log errors with more context
           val errorCategory = categorizeError(e)
@@ -209,45 +227,61 @@ object SocketManager:
           // Record network error metric
           socketMetrics.recordNetworkError(socketId.value, errorCategory) *>
             ZIO.logError(
-              s"❌ SOCKET_START_FAILED: socket=$socketId category=$errorCategory error=$errorDetails"
-            ) *>
-            ZIO.logDebug(s"🔍 SOCKET_ERROR_STACKTRACE: socket=$socketId - ${e.toString}")
+              s"Socket start failed - category=$errorCategory error=$errorDetails"
+            ) @@
+            LogContext.socketManager @@
+            LogContext.connectionId(socketId.value) @@
+            LogContext.errorType(errorCategory) *>
+            ZIO.logDebug(s"Socket error stacktrace: ${e.toString}") @@
+            LogContext.socketManager @@
+            LogContext.connectionId(socketId.value)
         }
 
       override def stopManager(): UIO[Unit] =
-        ZIO.logInfo("🔌 SOCKET_MANAGER: Stop requested") *>
+        ZIO.logInfo("Stop requested") @@
+          LogContext.socketManager *>
           // First interrupt all socket fibers
           connectionFibersRef.get.flatMap { fibers =>
             ZIO.foreachDiscard(fibers) { case (socketId, fiber) =>
-              ZIO.logInfo(s"🔌 SOCKET_MANAGER: Interrupting socket fiber $socketId") *>
+              ZIO.logInfo("Interrupting socket fiber") @@
+                LogContext.socketManager @@
+                LogContext.connectionId(socketId.value) *>
                 fiber.interrupt.timeout(2.seconds).flatMap {
                   case Some(_) =>
-                    ZIO.logDebug(s"🔌 Socket $socketId fiber interrupted successfully")
+                    ZIO.logDebug("Socket fiber interrupted successfully") @@
+                      LogContext.socketManager @@
+                      LogContext.connectionId(socketId.value)
                   case None =>
-                    ZIO.logWarning(s"🔌 Socket $socketId fiber interrupt timed out")
+                    ZIO.logWarning("Socket fiber interrupt timed out") @@
+                      LogContext.socketManager @@
+                      LogContext.connectionId(socketId.value)
                 }
             }
           } *>
           // Then interrupt the management fiber
           connectionFiber.get.flatMap {
             case Some(fiber) =>
-              ZIO.logInfo("🔌 SOCKET_MANAGER: Interrupting management fiber") *>
+              ZIO.logInfo("Interrupting management fiber") @@
+                LogContext.socketManager *>
                 fiber.interrupt.timeout(2.seconds).flatMap {
                   case Some(_) =>
-                    ZIO.logInfo("🔌 SOCKET_MANAGER: Management fiber interrupted successfully")
+                    ZIO.logInfo("Management fiber interrupted successfully") @@
+                      LogContext.socketManager
                   case None =>
                     ZIO.logWarning(
-                      "🔌 SOCKET_MANAGER: Management fiber did not interrupt within timeout"
-                    )
+                      "Management fiber did not interrupt within timeout"
+                    ) @@ LogContext.socketManager
                 }
             case None =>
-              ZIO.logDebug("🔌 SOCKET_MANAGER: No management fiber to interrupt")
+              ZIO.logDebug("No management fiber to interrupt") @@
+                LogContext.socketManager
           } *>
           // Clear all state
           connectionFiber.set(None) *>
           connectionFibersRef.set(Map.empty) *>
           connectionStatesRef.set(Map.empty) *>
-          ZIO.logInfo("🔌 SOCKET_MANAGER: All sockets stopped and state cleared")
+          ZIO.logInfo("All sockets stopped and state cleared") @@
+          LogContext.socketManager
 
       override def getConnectionState(id: SocketId): UIO[Option[SocketConnectionState]] =
         connectionStatesRef.get.map(_.get(id))
@@ -305,13 +339,17 @@ object SocketManager:
         _ <- ZIO.service[InboundQueue]
       } yield new SocketManager {
         override def startManager(): UIO[Unit] =
-          ZIO.logInfo("📡 STUB: SocketManager.startManager called")
+          ZIO.logInfo("STUB: SocketManager.startManager called") @@
+            LogContext.socketManager
 
         override def stopManager(): UIO[Unit] =
-          ZIO.logInfo("📡 STUB: SocketManager.stopManager called")
+          ZIO.logInfo("STUB: SocketManager.stopManager called") @@
+            LogContext.socketManager
 
         override def getConnectionState(id: SocketId): UIO[Option[SocketConnectionState]] =
-          ZIO.logInfo(s"📡 STUB: SocketManager.getConnectionState called for $id") *>
+          ZIO.logInfo("STUB: SocketManager.getConnectionState called") @@
+            LogContext.socketManager @@
+            LogContext.connectionId(id.value) *>
             ZIO.succeed(
               Some(
                 SocketConnectionState(
@@ -325,7 +363,8 @@ object SocketManager:
             )
 
         override def getAllConnectionStates: UIO[Map[SocketId, SocketConnectionState]] =
-          ZIO.logInfo("📡 STUB: SocketManager.getAllConnectionStates called") *>
+          ZIO.logInfo("STUB: SocketManager.getAllConnectionStates called") @@
+            LogContext.socketManager *>
             ZIO.succeed(
               Map(
                 SocketId("stub") -> SocketConnectionState(
@@ -339,7 +378,8 @@ object SocketManager:
             )
 
         override def listConnections: UIO[List[SocketConnectionState]] =
-          ZIO.logInfo("📡 STUB: SocketManager.listConnections called") *>
+          ZIO.logInfo("STUB: SocketManager.listConnections called") @@
+            LogContext.socketManager *>
             ZIO.succeed(
               List(
                 SocketConnectionState(

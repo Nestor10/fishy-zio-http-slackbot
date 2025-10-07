@@ -5,6 +5,7 @@ import zio.stream.*
 import com.nestor10.slackbot.domain.model.conversation.{Thread, ThreadMessage, ThreadId, MessageId}
 import com.nestor10.slackbot.domain.model.storage.MessageQuery
 import com.nestor10.slackbot.domain.service.MessageEventBus
+import com.nestor10.slackbot.infrastructure.observability.LogContext
 import java.time.Instant
 
 /** Service for persistent storage and retrieval of Thread and ThreadMessage domain objects.
@@ -122,7 +123,9 @@ object MessageStore:
     def store(message: ThreadMessage): IO[Error, MessageId] =
       for {
         _ <- messages.update(_ + (message.id -> message))
-        _ <- ZIO.logDebug(s"Stored message: ${message.id.formatted}")
+        _ <- ZIO.logDebug("Stored message") @@
+          LogContext.storage @@
+          LogContext.messageId(message.id)
         // Phase 7a: Publish MessageStored event (Option 2 pattern)
         _ <- eventBus.publish(MessageEventBus.MessageStored(message, Instant.now))
       } yield message.id
@@ -131,9 +134,9 @@ object MessageStore:
       for {
         // Store the thread metadata (root message is already stored separately when thread created)
         _ <- threads.update(_ + (thread.id -> thread))
-        _ <- ZIO.logInfo(
-          s"Stored thread: ${thread.id.formatted}"
-        )
+        _ <- ZIO.logInfo("Stored thread") @@
+          LogContext.storage @@
+          LogContext.threadId(thread.id)
         // Phase 7a: Publish ThreadCreated event (Option 2 pattern)
         // Hub stays DUMB - publishes ALL events, processor filters
         _ <- eventBus.publish(MessageEventBus.ThreadCreated(thread, Instant.now))
@@ -236,7 +239,8 @@ object MessageStore:
           messages <- Ref.make(Map.empty[MessageId, ThreadMessage])
           threads <- Ref.make(Map.empty[ThreadId, Thread])
           eventBus <- ZIO.service[MessageEventBus] // ← NEW: Get MessageEventBus dependency
-          _ <- ZIO.logInfo("MessageStore.InMemory initialized (with event publishing)")
+          _ <- ZIO.logInfo("MessageStore initialized (with event publishing)") @@
+            LogContext.storage
         } yield InMemory(messages, threads, eventBus)
       }
 

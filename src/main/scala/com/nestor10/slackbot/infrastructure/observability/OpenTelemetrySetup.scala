@@ -15,6 +15,7 @@ import io.opentelemetry.sdk.resources.Resource
 import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter
 import io.opentelemetry.api.common.Attributes
 import io.opentelemetry.api.common.AttributeKey
+import com.nestor10.slackbot.conf.AppConfig
 
 /** OpenTelemetry configuration for Slack bot.
   *
@@ -35,10 +36,6 @@ import io.opentelemetry.api.common.AttributeKey
   */
 object OpenTelemetrySetup:
 
-  private val serviceName = "slack-bot"
-  private val instrumentationScopeName = "slack-bot-instrumentation"
-  private val otlpEndpoint = "http://localhost:4317"
-
   /** Create OpenTelemetry SDK with OTLP exporter for traces and metrics.
     *
     * This is a Scoped ZIO that:
@@ -46,26 +43,26 @@ object OpenTelemetrySetup:
     *      3. Configures batch span processor 4. Configures periodic metric reader 5. Sets up
     *      resource attributes 6. Builds OpenTelemetry SDK
     */
-  val otelSdk: ZIO[Scope, Throwable, io.opentelemetry.api.OpenTelemetry] =
+  def otelSdk(cfg: AppConfig): ZIO[Scope, Throwable, io.opentelemetry.api.OpenTelemetry] =
     ZIO.acquireRelease {
       ZIO.attempt {
         // 1. OTLP gRPC span exporter (traces)
         val spanExporter = OtlpGrpcSpanExporter
           .builder()
-          .setEndpoint(otlpEndpoint)
+          .setEndpoint(cfg.otel.otlpEndpoint)
           .build()
 
         // 2. OTLP gRPC metric exporter (metrics)
         val metricExporter = OtlpGrpcMetricExporter
           .builder()
-          .setEndpoint(otlpEndpoint)
+          .setEndpoint(cfg.otel.otlpEndpoint)
           .build()
 
         // 3. Resource with service name
         val resource = Resource.create(
           Attributes.of(
             AttributeKey.stringKey("service.name"),
-            serviceName
+            cfg.otel.serviceName
           )
         )
 
@@ -96,43 +93,64 @@ object OpenTelemetrySetup:
           .build()
 
         ZIO.logInfo(
-          s"🔭 OTEL: OpenTelemetry SDK initialized (endpoint=$otlpEndpoint, service=$serviceName) with traces + metrics"
-        ) *> ZIO.succeed(sdk)
+          s"OpenTelemetry SDK initialized with traces + metrics"
+        ) @@
+          LogContext.app @@
+          LogContext.operation("otel_init") *>
+          ZIO.succeed(sdk)
       }.flatten
     } { sdk =>
       ZIO.attempt(sdk.close()).ignore *>
-        ZIO.logInfo("🔭 OTEL: OpenTelemetry SDK shut down")
+        ZIO.logInfo("OpenTelemetry SDK shut down") @@
+        LogContext.app
     }
 
   /** Complete OpenTelemetry layer stack for tracing only (existing).
     *
+    * Requires AppConfig to be provided in the layer stack.
+    *
     * {{{
     * myApp.provide(
+    *   AppConfig.layer,
     *   OpenTelemetrySetup.live
     * )
     * }}}
     */
-  val live: ZLayer[Any, Throwable, Tracing] =
-    ZLayer.make[Tracing](
-      OpenTelemetry.custom(otelSdk),
+  val live: ZLayer[AppConfig, Throwable, Tracing] =
+    ZLayer.makeSome[AppConfig, Tracing](
+      ZLayer.fromZIO(ZIO.service[AppConfig]).flatMap { cfg =>
+        OpenTelemetry.custom(otelSdk(cfg.get[AppConfig]))
+      },
       OpenTelemetry.contextZIO,
-      OpenTelemetry.tracing(instrumentationScopeName)
+      ZLayer.fromZIO(ZIO.service[AppConfig]).flatMap { cfg =>
+        OpenTelemetry.tracing(cfg.get[AppConfig].otel.instrumentationScopeName)
+      }
     )
 
   /** Complete OpenTelemetry layer stack for tracing + metrics (Phase 13).
     *
-    * Provides both Tracing and Meter services for manual instrumentation.
+    * Provides both Tracing and Meter services for manual instrumentation. Requires AppConfig to be
+    * provided in the layer stack.
     *
     * {{{
     * myApp.provide(
+    *   AppConfig.layer,
     *   OpenTelemetrySetup.liveWithMetrics
     * )
     * }}}
     */
-  val liveWithMetrics: ZLayer[Any, Throwable, Tracing & Meter & Instrument.Builder] =
-    ZLayer.make[Tracing & Meter & Instrument.Builder](
-      OpenTelemetry.custom(otelSdk),
+  val liveWithMetrics: ZLayer[AppConfig, Throwable, Tracing & Meter & Instrument.Builder] =
+    ZLayer.makeSome[AppConfig, Tracing & Meter & Instrument.Builder](
+      ZLayer.fromZIO(ZIO.service[AppConfig]).flatMap { cfg =>
+        OpenTelemetry.custom(otelSdk(cfg.get[AppConfig]))
+      },
       OpenTelemetry.contextZIO,
-      OpenTelemetry.tracing(instrumentationScopeName),
-      OpenTelemetry.metrics(instrumentationScopeName)
+      ZLayer.fromZIO(ZIO.service[AppConfig]).flatMap { cfg =>
+        val appCfg = cfg.get[AppConfig]
+        OpenTelemetry.tracing(appCfg.otel.instrumentationScopeName)
+      },
+      ZLayer.fromZIO(ZIO.service[AppConfig]).flatMap { cfg =>
+        val appCfg = cfg.get[AppConfig]
+        OpenTelemetry.metrics(appCfg.otel.instrumentationScopeName)
+      }
     )

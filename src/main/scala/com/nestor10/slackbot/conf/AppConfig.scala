@@ -12,17 +12,25 @@ final case class LlmConfig(
     systemPrompt: String = "You are a helpful assistant in a Slack workspace."
 )
 
+final case class OtelConfig(
+    serviceName: String,
+    instrumentationScopeName: String,
+    otlpEndpoint: String
+)
+
 final case class AppConfig(
     pingIntervalSeconds: Int,
     slackAppToken: String,
     slackBotToken: String,
     debugReconnects: Boolean,
     socketCount: Int,
-    llm: LlmConfig = LlmConfig()
+    llm: LlmConfig = LlmConfig(),
+    otel: OtelConfig
 )
 
 object AppConfig {
   given Config[LlmConfig] = deriveConfig[LlmConfig]
+  given Config[OtelConfig] = deriveConfig[OtelConfig]
   val config: Config[AppConfig] = deriveConfig[AppConfig].nested("app")
   val layer: ZLayer[Any, Throwable, AppConfig] = ZLayer.fromZIO(ZIO.config(config))
 }
