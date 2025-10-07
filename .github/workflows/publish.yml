@@ -46,7 +46,7 @@ jobs:
       - name: Build application package
         run: sbt Docker/stage
 
-      - name: Build and push multi-arch image
+      - name: Build and push multi-arch Docker image
         uses: docker/build-push-action@v5
         with:
           context: target/docker/stage
@@ -55,11 +55,5 @@ jobs:
           tags: |
             quay.io/nestor10/fishy-zio-http-slackbot:${{ steps.version.outputs.VERSION }}
             quay.io/nestor10/fishy-zio-http-slackbot:latest
-
-      - name: Image Info
-        run: |
-          echo "Published multi-arch Docker image:"
-          echo "  Platforms: linux/amd64, linux/arm64"
-          echo "  Tags:"
-          echo "    - quay.io/nestor10/fishy-zio-http-slackbot:${{ steps.version.outputs.VERSION }}"
-          echo "    - quay.io/nestor10/fishy-zio-http-slackbot:latest"
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
