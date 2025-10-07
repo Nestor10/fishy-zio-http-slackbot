@@ -2,15 +2,15 @@ package com.nestor10.slackbot.infrastructure.observability
 
 import com.nestor10.slackbot.conf.AppConfig
 import io.opentelemetry.api
-import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter
+import io.opentelemetry.api.common.{AttributeKey, Attributes}
 import io.opentelemetry.exporter.otlp.metrics.OtlpGrpcMetricExporter
+import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter
 import io.opentelemetry.sdk.OpenTelemetrySdk
 import io.opentelemetry.sdk.metrics.SdkMeterProvider
 import io.opentelemetry.sdk.metrics.`export`.PeriodicMetricReader
 import io.opentelemetry.sdk.resources.Resource
 import io.opentelemetry.sdk.trace.SdkTracerProvider
 import io.opentelemetry.sdk.trace.`export`.BatchSpanProcessor
-import io.opentelemetry.api.common.{AttributeKey, Attributes}
 import zio._
 import zio.telemetry.opentelemetry.OpenTelemetry
 

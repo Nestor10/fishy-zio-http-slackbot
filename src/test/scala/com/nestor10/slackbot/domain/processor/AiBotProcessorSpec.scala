@@ -1,17 +1,18 @@
 package com.nestor10.slackbot.domain.processor
 
-import zio.*
-import zio.test.*
-import zio.test.Assertion.*
-import zio.telemetry.opentelemetry.tracing.Tracing
-import com.nestor10.slackbot.infrastructure.storage.MessageStore
-import com.nestor10.slackbot.infrastructure.llm.LLMService
-import com.nestor10.slackbot.infrastructure.slack.SlackApiClient
-import com.nestor10.slackbot.infrastructure.observability.{LLMMetrics, OtelSdk}
-import com.nestor10.slackbot.domain.service.MessageEventBus
+import com.nestor10.slackbot.conf.{AppConfig, LlmConfig}
 import com.nestor10.slackbot.domain.model.conversation.*
 import com.nestor10.slackbot.domain.model.llm.{ChatMessage, ChatRole}
-import com.nestor10.slackbot.conf.{AppConfig, LlmConfig}
+import com.nestor10.slackbot.domain.service.MessageEventBus
+import com.nestor10.slackbot.infrastructure.llm.LLMService
+import com.nestor10.slackbot.infrastructure.observability.{LLMMetrics, OtelSdk}
+import com.nestor10.slackbot.infrastructure.slack.SlackApiClient
+import com.nestor10.slackbot.infrastructure.storage.MessageStore
+import zio.*
+import zio.telemetry.opentelemetry.tracing.Tracing
+import zio.test.Assertion.*
+import zio.test.*
+
 import java.time.Instant
 
 /** ZIO Test spec for AiBotProcessor - Critical path testing

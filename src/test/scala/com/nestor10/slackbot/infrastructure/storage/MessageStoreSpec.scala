@@ -1,10 +1,11 @@
 package com.nestor10.slackbot.infrastructure.storage
 
-import zio.*
-import zio.test.*
-import zio.test.Assertion.*
 import com.nestor10.slackbot.domain.model.conversation.*
 import com.nestor10.slackbot.domain.service.MessageEventBus
+import zio.*
+import zio.test.Assertion.*
+import zio.test.*
+
 import java.time.Instant
 
 /** ZIO Test spec for MessageStore - Critical path testing
