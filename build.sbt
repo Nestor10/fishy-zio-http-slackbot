@@ -111,7 +111,6 @@ releaseProcess := Seq[ReleaseStep](
   setReleaseVersion,
   commitReleaseVersion,
   tagRelease,
-  releaseStepCommand("docker:publish"),  // Publish Docker image
   setNextVersion,
   commitNextVersion,
   pushChanges
