@@ -19,11 +19,11 @@ final case class OtelConfig(
 )
 
 final case class AppConfig(
-    pingIntervalSeconds: Int,
+    pingIntervalSeconds: Int = 5,
     slackAppToken: String,
     slackBotToken: String,
-    debugReconnects: Boolean,
-    socketCount: Int,
+    debugReconnects: Boolean = false,
+    socketCount: Int = 3,
     llm: LlmConfig,
     otel: Option[OtelConfig] = None
 )

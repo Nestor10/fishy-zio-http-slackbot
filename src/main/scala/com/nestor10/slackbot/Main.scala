@@ -52,9 +52,12 @@ object Main extends ZIOAppDefault {
 
   private val clientConfigLayer = ZLayer.succeed(clientConfig)
 
-  // Central config provider (resource path -> kebab-case keys) with default fallback (env, system props, etc.)
+  // Central config provider with proper name mapping:
+  // - Environment variables: APP_SLACK_APP_TOKEN (uppercase with underscores)
+  // - Config fields: slackAppToken (camelCase)
+  // The .snakeCase converts camelCase -> snake_case, then uppercase -> UPPER_SNAKE_CASE
   private val configProvider =
-    ConfigProvider.defaultProvider.orElse(
+    ConfigProvider.envProvider.snakeCase.upperCase.orElse(
       TypesafeConfigProvider
         .fromResourcePath()
         .kebabCase
