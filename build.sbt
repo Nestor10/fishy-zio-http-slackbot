@@ -88,7 +88,7 @@ Docker / daemonUser := "root"
 
 Docker / packageName := "fishy-zio-http-slackbot"
 Docker / version := version.value
-dockerRepository := Some("quay.io/nestor10")
+dockerRepository := Some("quay.io/nestor9001")
 dockerBaseImage := "eclipse-temurin:23-jre-noble"  // Ubuntu Noble with Java 23
 dockerUpdateLatest := true
 dockerExposedPorts := Seq(8080, 8888, 8889)

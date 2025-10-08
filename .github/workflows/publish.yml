@@ -53,7 +53,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            quay.io/nestor10/fishy-zio-http-slackbot:${{ steps.version.outputs.VERSION }}
-            quay.io/nestor10/fishy-zio-http-slackbot:latest
+            quay.io/nestor9001/fishy-zio-http-slackbot:${{ steps.version.outputs.VERSION }}
+            quay.io/nestor9001/fishy-zio-http-slackbot:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
