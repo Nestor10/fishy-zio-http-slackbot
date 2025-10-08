@@ -1,0 +1,323 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+data:
+  otel-collector-config.yaml: |
+    # OpenTelemetry Collector Configuration
+    # Using custom ports (4319/4320) to avoid conflict with Jaeger's OTLP (4317/4318)
+    
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4319
+          http:
+            endpoint: 0.0.0.0:4320
+    
+    processors:
+      batch:
+        timeout: 1s
+        send_batch_size: 1024
+        send_batch_max_size: 2048
+      
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 512
+      
+      resourcedetection:
+        detectors: [env, system]
+        timeout: 5s
+      
+      probabilistic_sampler:
+        sampling_percentage: 100
+    
+    exporters:
+      # Forward traces to Jaeger's OTLP endpoint
+      otlp/jaeger:
+        endpoint: 127.0.0.1:4317
+        tls:
+          insecure: true
+      
+      # Expose metrics for Prometheus to scrape
+      prometheus:
+        endpoint: 0.0.0.0:8889
+        namespace: slackbot
+        const_labels:
+          service: slack-bot
+      
+      # Debug output
+      debug:
+        verbosity: detailed
+        sampling_initial: 5
+        sampling_thereafter: 200
+    
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, resourcedetection, probabilistic_sampler, batch]
+          exporters: [otlp/jaeger, debug]
+        
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, resourcedetection, batch]
+          exporters: [prometheus, debug]
+      
+      telemetry:
+        logs:
+          level: info
+        metrics:
+          level: detailed
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+    
+    scrape_configs:
+      # Scrape metrics from OTel Collector
+      - job_name: 'otel-collector'
+        static_configs:
+          - targets: ['127.0.0.1:8889']
+            labels:
+              service: 'otel-collector'
+      
+      # Scrape Prometheus's own metrics
+      - job_name: 'prometheus'
+        static_configs:
+          - targets: ['127.0.0.1:9090']
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: slackbot-stack
+  labels:
+    app: slackbot
+spec:
+  # Shared network for all containers in the pod
+  # All containers can communicate via localhost
+  hostNetwork: false
+  
+  containers:
+  # ==============================================================================
+  # Slack Bot - Main Application
+  # ==============================================================================
+  - name: slackbot
+    image: quay.io/nestor10/fishy-zio-http-slackbot:0.1.0-SNAPSHOT
+    ports:
+    - containerPort: 8080
+      hostPort: 8080
+      protocol: TCP
+      name: http
+    - containerPort: 8888
+      hostPort: 8888
+      protocol: TCP
+      name: metrics
+    - containerPort: 8889
+      hostPort: 8889
+      protocol: TCP
+      name: health
+    env:
+    # Slack Configuration (!!!!REPLACE WITH YOUR TOKENS!!!!)
+    - name: APP_SLACK_APP_TOKEN
+      value: "xapp-1-xxxx"
+    - name: APP_SLACK_BOT_TOKEN
+      value: "xoxb-xxxx"
+    
+    # LLM Configuration (points to Ollama in same pod via localhost)
+    - name: APP_LLM_BASE_URL
+      value: "http://127.0.0.1:11434"
+    - name: APP_LLM_MODEL
+      value: "qwen2.5:0.5b"
+    # No API key needed for Ollama
+    # - name: APP_LLM_API_KEY
+    #   value: ""
+    
+    # OpenTelemetry Configuration (send directly to Jaeger - no collector needed)
+    - name: APP_OTEL_SERVICE_NAME
+      value: "fishy-zio-http-slackbot"
+    - name: APP_OTEL_INSTRUMENTATION_SCOPE_NAME
+      value: "com.nestor10.slackbot"
+    - name: APP_OTEL_OTLP_ENDPOINT
+      value: "http://127.0.0.1:4319"  # OTel Collector (custom port to avoid Jaeger conflict)
+    
+    # Logging Configuration
+    - name: APP_LOG_LEVEL
+      value: "INFO"
+    
+    # Debug Configuration (optional)
+    # - name: APP_DEBUG_RECONNECTS
+    #   value: "true"
+    
+    resources:
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+      requests:
+        memory: "256Mi"
+        cpu: "250m"
+
+  # ==============================================================================
+  # Ollama - Local LLM Server
+  # ==============================================================================
+  - name: ollama
+    image: docker.io/ollama/ollama:latest
+    # Start Ollama server in background, then pull model
+    command:
+      - /bin/sh
+      - -c
+      - |
+        # Start Ollama server in background
+        /bin/ollama serve &
+        # Wait for server to be ready
+        sleep 5
+        # Pull the model specified in OLLAMA_MODEL (default: llama3.2:3b)
+        /bin/ollama pull ${OLLAMA_MODEL:-llama3.2:3b}
+        # Keep the server running
+        wait
+    ports:
+    - containerPort: 11434
+      hostPort: 11434
+      protocol: TCP
+      name: ollama
+    volumeMounts:
+    - name: ollama-data
+      mountPath: /root/.ollama
+    env:
+    - name: OLLAMA_HOST
+      value: "0.0.0.0:11434"
+    - name: OLLAMA_MODEL
+      value: "qwen2.5:0.5b"  # Change this to match your APP_LLM_MODEL
+    resources:
+      limits:
+        memory: "4Gi"
+        cpu: "8"  # More CPU for faster model download/loading
+      requests:
+        memory: "2Gi"
+        cpu: "2"
+
+  # ==============================================================================
+  # OpenTelemetry Collector - Telemetry Hub (metrics + traces)
+  # ==============================================================================
+  - name: otel-collector
+    image: docker.io/otel/opentelemetry-collector-contrib:latest
+    args:
+    - "--config=/etc/otel/otel-collector-config.yaml"
+    ports:
+    - containerPort: 4319  # OTLP gRPC (custom port, not 4317)
+      protocol: TCP
+      name: otlp-grpc
+    - containerPort: 4320  # OTLP HTTP (custom port, not 4318)
+      protocol: TCP
+      name: otlp-http
+    - containerPort: 8889  # Prometheus scrape endpoint
+      protocol: TCP
+      name: prometheus
+    volumeMounts:
+    - name: otel-config
+      mountPath: /etc/otel
+      readOnly: true
+    resources:
+      limits:
+        memory: "256Mi"
+        cpu: "200m"
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+
+  # ==============================================================================
+  # Jaeger - Distributed Tracing Backend (with built-in OTLP support)  
+  # ==============================================================================
+  - name: jaeger
+    image: docker.io/jaegertracing/all-in-one:latest
+    ports:
+    - containerPort: 16686  # Jaeger UI - expose to host
+      hostPort: 16686
+      protocol: TCP
+      name: jaeger-ui
+    - containerPort: 14250  # Internal gRPC - no hostPort needed
+      protocol: TCP
+      name: jaeger-grpc
+    env:
+    - name: COLLECTOR_OTLP_ENABLED
+      value: "true"
+    resources:
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+      requests:
+        memory: "256Mi"
+        cpu: "250m"
+
+  # ==============================================================================
+  # Prometheus - Metrics Backend
+  # ==============================================================================
+  - name: prometheus
+    image: docker.io/prom/prometheus:latest
+    args:
+    - "--config.file=/etc/prometheus/prometheus.yml"
+    - "--storage.tsdb.path=/prometheus"
+    ports:
+    - containerPort: 9090  # Prometheus UI - expose to host
+      hostPort: 9090
+      protocol: TCP
+      name: prom-ui
+    volumeMounts:
+    - name: prometheus-config
+      mountPath: /etc/prometheus
+      readOnly: true
+    resources:
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+      requests:
+        memory: "256Mi"
+        cpu: "250m"
+
+  # ==============================================================================
+  # Grafana - Visualization Dashboard
+  # ==============================================================================
+  - name: grafana
+    image: docker.io/grafana/grafana:latest
+    ports:
+    - containerPort: 3000  # Grafana UI - expose to host
+      hostPort: 3000
+      protocol: TCP
+      name: grafana-ui
+    env:
+    - name: GF_SECURITY_ADMIN_PASSWORD
+      value: "admin"
+    - name: GF_USERS_ALLOW_SIGN_UP
+      value: "false"
+    resources:
+      limits:
+        memory: "256Mi"
+        cpu: "200m"
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+
+  restartPolicy: Always
+
+  # ==============================================================================
+  # Volumes - Configuration files
+  # ==============================================================================
+  volumes:
+  - name: otel-config
+    configMap:
+      name: otel-collector-config
+  - name: prometheus-config
+    configMap:
+      name: prometheus-config
+  - name: ollama-data
+    hostPath:
+      path: /Users/eric/.ollama
+      type: DirectoryOrCreate

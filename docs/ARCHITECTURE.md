@@ -22,7 +22,7 @@
 
 ## Overview
 
-fishy-zio-http-slackbot is a **production-ready Slack bot** built with **ZIO 2.x** and **zio-http 3.x**, implementing Slack Socket Mode without Bolt framework. It features:
+fishy-zio-http-slackbot is a **Slack bot** built with **ZIO 2.x** and **zio-http 3.x**, implementing Slack Socket Mode without Bolt framework. It features:
 
 - **Event-Driven Architecture** with domain events and pluggable processors
 - **AI-Powered Responses** with multi-provider LLM support (Ollama, OpenAI, Anthropic, Azure)
@@ -251,114 +251,116 @@ Slack WebSocket
 
 ### 1. New Thread Creation (App Mention)
 
-```
-User mentions @bot in new message
-  ↓
-Slack WebSocket: AppMention event
-  ↓
-SocketService: Parse JSON → BusinessMessage
-  ↓
-MessageProcessorService: Transform to Thread + ThreadMessage
-  ↓
-MessageStore.storeThread(thread)
-  ↓ (on success)
-MessageEventBus.publish(ThreadCreated)
-  ↓
-ProcessorRegistry distributes to processors
-  ↓
-AiBotProcessor.canProcess() → true (ThreadCreated event)
-  ↓
-AiBotProcessor.process() → enqueue work
-  ↓
-Worker fiber: Generate LLM response
-  ↓
-Post response to Slack thread
+```mermaid
+sequenceDiagram
+    participant User
+    participant Slack WebSocket
+    participant SocketService
+    participant SlackEventOrchestrator
+    participant MessageStore
+    participant EventBus
+    participant ProcessorRegistry
+    participant AiBotProcessor
+    participant LLM
+    
+    User->>Slack WebSocket: @mention bot in new message
+    Slack WebSocket->>SocketService: AppMention event (JSON)
+    SocketService->>SlackEventOrchestrator: Parse to BusinessMessage
+    SlackEventOrchestrator->>SlackEventOrchestrator: Transform to Thread + ThreadMessage
+    SlackEventOrchestrator->>MessageStore: storeThread(thread)
+    MessageStore->>MessageStore: Store in Ref
+    MessageStore->>EventBus: publish(ThreadCreated)
+    EventBus->>ProcessorRegistry: Broadcast event
+    ProcessorRegistry->>AiBotProcessor: Distribute event
+    AiBotProcessor->>AiBotProcessor: canProcess() → true
+    AiBotProcessor->>AiBotProcessor: process() → enqueue work
+    
+    Note over AiBotProcessor: Worker fiber processes queue
+    AiBotProcessor->>MessageStore: retrieveThread() + streamThread()
+    MessageStore-->>AiBotProcessor: Full thread context
+    AiBotProcessor->>LLM: chat(messages, model, temp)
+    LLM-->>AiBotProcessor: Response text
+    AiBotProcessor->>Slack WebSocket: Post reply to thread
+    Slack WebSocket->>User: Display bot response
 ```
 
 ### 2. Thread Reply Processing
 
-```
-User replies in existing thread
-  ↓
-Slack WebSocket: Message event (with thread_ts)
-  ↓
-SlackEventOrchestrator: Check if thread in memory
-  ↓ (if not found)
-Recover thread from Slack API (fetch history)
-  ↓
-MessageStore.store(threadMessage)
-  ↓ (on success)
-MessageEventBus.publish(MessageStored)
-  ↓
-ProcessorRegistry distributes to processors
-  ↓
-AiBotProcessor.canProcess() → true if from user
-  ↓
-AiBotProcessor.process() → enqueue in thread's sliding queue
-  ↓
-Worker fiber: Cancel existing LLM if running (speculative execution)
-  ↓
-Generate new LLM response with full thread context
-  ↓
-Post response to Slack
+```mermaid
+sequenceDiagram
+    participant User
+    participant Slack WebSocket
+    participant SlackEventOrchestrator
+    participant Slack API
+    participant MessageStore
+    participant EventBus
+    participant AiBotProcessor
+    participant Queue
+    
+    User->>Slack WebSocket: Reply in existing thread
+    Slack WebSocket->>SlackEventOrchestrator: Message event (thread_ts)
+    
+    alt Thread in memory
+        SlackEventOrchestrator->>MessageStore: store(threadMessage)
+    else Thread NOT in memory
+        SlackEventOrchestrator->>Slack API: conversations.history(channel, thread_ts)
+        Slack API-->>SlackEventOrchestrator: Full thread history (up to 100 messages)
+        SlackEventOrchestrator->>MessageStore: storeThread(thread)
+        SlackEventOrchestrator->>MessageStore: store(messages...)
+    end
+    
+    MessageStore->>EventBus: publish(MessageStored)
+    EventBus->>AiBotProcessor: Distribute event
+    
+    AiBotProcessor->>AiBotProcessor: canProcess() → check source != Self
+    
+    alt Message from user
+        AiBotProcessor->>Queue: Offer to sliding queue (capacity 1)
+        Note over Queue: Older message dropped if queue full
+        Queue-->>AiBotProcessor: Enqueued
+    else Message from bot
+        AiBotProcessor->>AiBotProcessor: Skip (own message)
+    end
 ```
 
 ### 3. Latest-Wins Pattern (Speculative Execution)
 
-```
-User sends Message A
-  ↓
-Worker starts LLM call for A (3s latency)
-  ↓ (300ms later)
-User sends Message B (supersedes A)
-  ↓
-Worker enqueues B in sliding queue (A is dropped)
-  ↓
-Monitor fiber detects newer message B
-  ↓
-Interrupt LLM fiber for A (canceled)
-  ↓
-Record interruption metric (reason: superseded)
-  ↓
-Worker dequeues B, starts new LLM call
-  ↓
-LLM completes for B (no interruption)
-  ↓
-Post response for B to Slack
+```mermaid
+sequenceDiagram
+    participant User
+    participant Queue
+    participant Worker Fiber
+    participant Monitor Fiber
+    participant LLM
+    participant Metrics
+    
+    User->>Queue: Message A (timestamp: 1000)
+    Queue->>Worker Fiber: Dequeue A
+    Worker Fiber->>LLM: Generate response for A
+    Note over LLM: Processing... (3s latency)
+    
+    User->>Queue: Message B (timestamp: 1100)
+    Note over Queue: Sliding queue (capacity 1)<br/>Message A dropped
+    
+    Monitor Fiber->>Queue: Check queue for newer message
+    Monitor Fiber->>Monitor Fiber: Detect Message B (newer timestamp)
+    Monitor Fiber->>Worker Fiber: Interrupt LLM call for A
+    Worker Fiber->>LLM: Cancel request
+    Worker Fiber->>Metrics: Record interruption (reason: superseded)
+    
+    Worker Fiber->>Queue: Dequeue B
+    Worker Fiber->>LLM: Generate response for B
+    LLM-->>Worker Fiber: Response for B
+    Worker Fiber->>User: Post response for B
+    
+    Note over Worker Fiber,Metrics: Message A never posted<br/>(avoided wasted tokens)
 ```
 
 ---
 
 ## Key Design Patterns
 
-### 1. Two-Layer Metrics Architecture
-
-**Layer 1: ZIO Runtime Metrics** (automatic)
-- Fiber counts
-- Queue utilization
-- Execution time distributions
-
-**Layer 2: Domain Metrics** (manual via zio-metrics)
-- LLM call duration
-- Active AI workers
-- Socket connection uptime
-- Storage operations
-
-**Implementation**:
-```scala
-// Domain metrics in service
-case class LLMMetrics(
-  callDuration: Histogram[Double],
-  activeWorkers: Gauge[Int],
-  interruptions: Counter[Long]
-)
-
-// Usage
-llmMetrics.callDuration.update(elapsedMs)
-llmMetrics.recordInterruption("superseded")
-```
-
-### 2. Latest-Wins Pattern (Per-Thread Queues)
+### 1. Latest-Wins Pattern (Per-Thread Queues)
 
 Each thread gets a **sliding queue with capacity 1**:
 - Only most recent message is processed
@@ -368,24 +370,16 @@ Each thread gets a **sliding queue with capacity 1**:
 
 **Key Insight**: Users expect bot to respond to their LATEST message, not every message.
 
-### 3. Structured Logging with LogContext
+### 2. Structured Logging with LogContext
 
 **FiberRef-based context propagation**:
-```scala
-// Set context
-LogContext.threadId(threadId) *>
-LogContext.userId(userId) *>
-ZIO.logInfo("Processing message")
+- `LogContext.threadId()`, `LogContext.userId()`, `LogContext.operation()`
+- Automatic fiber-local context in all logs
+- Output: `[thread_id=C123.1234] [user_id=U123] Processing message`
 
-// Output: [thread_id=C123.1234] [user_id=U123] Processing message
-```
+**Available Contexts**: threadId, messageId, channelId, userId, operation, errorType, service-specific tags
 
-**Available Contexts**:
-- `threadId`, `messageId`, `channelId`, `userId`
-- `operation`, `errorType`, `timestamp`
-- Service-specific: `aiBot`, `orchestrator`, `registry`, `storage`
-
-### 4. Graceful Shutdown
+### 3. Graceful Shutdown
 
 **Resource Lifecycle**:
 1. Main fiber interrupted (Ctrl+C)
@@ -396,7 +390,7 @@ ZIO.logInfo("Processing message")
 
 **Pattern**: All long-running processes use `ZIO.scoped` for automatic cleanup
 
-### 5. Domain Event Sourcing
+### 4. Domain Event Sourcing
 
 **Events Are Facts**:
 - `ThreadCreated(threadId, channelId, timestamp)`
@@ -417,73 +411,74 @@ ZIO.logInfo("Processing message")
 
 ## Observability
 
-### 1. Distributed Tracing (OpenTelemetry)
+**Complete OpenTelemetry-based observability** with unified export pipeline for traces, metrics, and logs.
 
-**Setup**:
-- OTLP exporter to Jaeger (localhost:4317)
-- Service name: "slack-bot"
-- Batch span processor for performance
+### Architecture
+
+```mermaid
+graph LR
+    A[ZIO Metric API] --> B[OpenTelemetry SDK]
+    B --> C[OTLP Exporter gRPC]
+    C --> D[OTEL Collector]
+    D --> E[Jaeger Traces]
+    D --> F[Prometheus Metrics]
+    F --> G[Grafana Dashboards]
+    
+    style A fill:#4A90E2
+    style B fill:#7B68EE
+    style C fill:#9370DB
+    style D fill:#FF6B6B
+    style E fill:#4ECDC4
+    style F fill:#45B7D1
+    style G fill:#96CEB4
+```
+
+**Flow**: ZIO Metric API → OpenTelemetry SDK (auto-bridge) → OTLP Exporter (gRPC) → OTEL Collector → Backends (Jaeger/Prometheus/Grafana)
+
+### 1. Distributed Tracing
 
 **Instrumented Operations**:
-- `llm.generate_response`: LLM call with context size, latency, response length
-- `slack.post_message`: Slack API call with thread/channel IDs
-- `message.store`: Storage operations
-- `aibot.process`: Event processing
+- `llm.generate_response` - LLM calls with context size, latency, interruption reason
+- `slack.post_message` - Slack API calls with thread/channel IDs
+- `message.store` - Storage operations
+- `aibot.process` - Event processing
 
-**Key Attributes**:
-- `thread.id`, `channel.id`, `user.id`
-- `llm.model`, `llm.context_messages`, `llm.latency_ms`
-- `llm.interrupted_reason` (when canceled)
+**Key Attributes**: `thread.id`, `channel.id`, `user.id`, `llm.model`, `llm.context_messages`, `llm.interrupted_reason`
 
-**Events**:
-- `llm_request_start`, `llm_request_complete`
-- `llm_interrupted` (speculative execution cancellation)
-- `slack_message_posted`
+**Trace Events**: `llm_request_start`, `llm_request_complete`, `llm_interrupted`, `slack_message_posted`
 
-**Example Trace**:
-```
-slack.websocket_message (root)
-├─ message.process
-│  ├─ message.store
-│  └─ aibot.process
-│     ├─ llm.generate_response [⏱️ 2.3s] [interrupted]
-│     └─ (no slack.post_message - canceled)
-```
-
-### 2. Metrics (Prometheus)
-
-**Socket Metrics**:
-- `slack_socket_connection_uptime_seconds` (gauge)
-- `slack_socket_reconnection_count` (counter)
-- `slack_socket_state_changes` (counter by state)
-
-**Storage Metrics**:
-- `slack_storage_threads_total` (gauge)
-- `slack_storage_messages_total` (gauge)
-- `slack_storage_operations_count` (counter by op)
+### 2. Metrics (OpenTelemetry/Prometheus)
 
 **LLM Metrics**:
-- `llm_call_duration_ms` (histogram)
-- `llm_active_workers` (gauge)
-- `llm_interruptions` (counter by reason)
-- `llm_tokens_used` (counter - if available)
+- `llm_requests_total` (Counter) - Calls by provider & model
+- `llm_interruptions_total` (Counter) - Cancellations by reason
+- `llm_latency_seconds` (Histogram) - Response time distribution
+- `thread_workers_active` (Gauge) - Active speculative execution workers
 
-**Processor Metrics**:
-- `processor_events_processed` (counter by processor)
-- `processor_errors` (counter by processor)
+**Socket Metrics**:
+- `socket_connections_started_total` (Counter) - Connection attempts
+- `socket_connections_closed_total` (Counter) - Closes by reason
+- `socket_connection_duration_seconds` (Histogram) - Connection lifetime
+- `socket_errors_total` (Counter) - Network errors by category
+- `socket_connections_ok` (Gauge) - Healthy connections (updated every 10s)
 
-### 3. Logging
+**Storage Metrics**:
+- `storage_threads_count` (Gauge) - Total conversation threads
+- `storage_messages_count` (Gauge) - Total messages stored
 
-**Structured JSON logging** (logback-classic):
-- Timestamp, level, logger, message
-- Fiber ID for correlation
-- Context fields via FiberRef (thread_id, user_id, etc.)
+**Implementation**: ZIO Metric API with `MetricLabel` for dimensions, automatic OpenTelemetry export via OTLP
+
+### 3. Structured Logging
+
+**Format**: JSON with timestamp, level, logger, message, fiber ID, FiberRef context fields
 
 **Log Levels**:
 - `DEBUG`: Internal state changes, queue operations
 - `INFO`: Business events (message stored, LLM call, response posted)
 - `WARN`: Recoverable errors (thread recovery, connection issues)
 - `ERROR`: Unrecoverable errors (storage failure, critical bugs)
+
+**Context Propagation**: FiberRef-based (thread_id, user_id, operation, etc.) - see Structured Logging pattern above
 
 ---
 
@@ -554,44 +549,9 @@ export APP_SLACK_BOT_TOKEN="xoxb-..."
 export APP_LLM_BASE_URL="http://localhost:11434"  # Ollama
 export APP_LLM_MODEL="llama3.2"
 
-# Start Jaeger (optional - for tracing)
-./scripts/start-jaeger.sh
 
 # Run bot
 sbt run
-
-# Or dev mode (auto-reload on changes)
-sbt dev
-```
-
-### Production Deployment
-
-**Container Image** (planned):
-```dockerfile
-FROM eclipse-temurin:23-jre-alpine
-COPY target/scala-3.7.2/fishy-zio-http-socket-assembly.jar /app.jar
-ENV APP_SLACK_APP_TOKEN=""
-ENV APP_SLACK_BOT_TOKEN=""
-ENV APP_LLM_BASE_URL=""
-ENV APP_LLM_API_KEY=""
-CMD ["java", "-jar", "/app.jar"]
-```
-
-**Observability Stack** (Docker Compose):
-- Jaeger (tracing)
-- Prometheus (metrics)
-- Grafana (dashboards)
-- OTEL Collector (telemetry pipeline)
-
-**Recommended Resources**:
-- **Memory**: 512MB-1GB (in-memory storage)
-- **CPU**: 1-2 cores (LLM calls are I/O bound)
-- **Network**: Low latency to Slack API and LLM provider
-
-**Health Checks**:
-- WebSocket connection state (Connected = healthy)
-- Active worker count (> 0 = processing)
-- LLM response time (< 5s = good)
 
 ---
 
@@ -633,19 +593,15 @@ CMD ["java", "-jar", "/app.jar"]
 ### Future Enhancements
 
 **Phase 14**: Persistence Layer
-- [ ] PostgreSQL storage (replace in-memory)
-- [ ] Event sourcing with event log
+- [ ] PostgreSQL storage (replace in-memory) or some service that would allow users to examin utilization. 
 - [ ] Thread/message archival
 
 **Phase 15**: Advanced Features
 - [ ] Multi-bot support (different personalities)
-- [ ] RAG integration (vector DB for context)
-- [ ] Tool calling (function execution)
+- [ ] LLM4S integration (why would i build rag tools and other capibilities in here)
 
 **Phase 16**: Scalability
-- [ ] Horizontal scaling (Redis pub-sub)
 - [ ] Load balancing (multiple instances)
-- [ ] Rate limiting (per-user, per-thread)
 
 ---
 
