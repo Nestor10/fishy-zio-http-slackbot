@@ -147,7 +147,6 @@ APP_LLM_MODEL="gpt-4"
 APP_LLM_API_KEY="sk-..."
 ```
 
-
 **Groq** (quick setup*):
 ```bash
 APP_LLM_BASE_URL="https://api.groq.com/openai"
@@ -177,8 +176,6 @@ podman kube play ./scripts/slackbot-pod.yaml
 # Grafana (dashboards): http://localhost:3000
 ```
 
-See [SLACKBOT_POD_README.md](./SLACKBOT_POD_README.md) for details.
-
 ### Development
 
 ```bash
@@ -194,13 +191,6 @@ APP_LLM_BASE_URL="http://localhost:11434"
 APP_LLM_MODEL="llama3.2:3b"
 EOF
 
-# Load environment variables
-source .env
-
-# Run with hot reload
-sbt dev  # Auto-restarts on code changes
-
-# Or standard run
 sbt run
 ```
 
@@ -208,25 +198,11 @@ sbt run
 
 **Built-in OpenTelemetry integration:**
 
-- 📊 **Distributed Tracing**: See message flow from Slack → LLM → Response
-- 📈 **Metrics**: Thread count, LLM latency, WebSocket health
-- 📝 **Structured Logging**: Correlation IDs, context propagation
-
-**Pre-configured dashboards** for Jaeger, Prometheus, and Grafana included.
-
-See [docs/ZIO_TELEMETRY_GUIDE.md](./docs/ZIO_TELEMETRY_GUIDE.md) for setup.
+- **Distributed Tracing**: See message flow from Slack → LLM → Response
+- **Metrics**: Thread count, LLM latency, WebSocket health
+- **Structured Logging**: Correlation IDs, context propagation
 
 ---
-
-## Documentation
-
-- **[ARCHITECTURE.md](./docs/ARCHITECTURE.md)** - System design and patterns
-- **[RELEASE.md](./docs/RELEASE.md)** - Release process and deployment
-- **[ZIO_TELEMETRY_GUIDE.md](./docs/ZIO_TELEMETRY_GUIDE.md)** - Observability setup
-- **[LLM_PROVIDERS.md](./docs/LLM_PROVIDERS.md)** - LLM configuration guide
-- **[SLACKBOT_POD_README.md](./SLACKBOT_POD_README.md)** - Local testing stack
-
-
 
 ## Contributing
 
@@ -245,20 +221,6 @@ PRs welcome! This project follows:
 
 **Built with**  [ZIO](https://zio.dev) •  [zio-http](https://github.com/zio/zio-http) •  [OpenTelemetry](https://opentelemetry.io)
 
-
-### 3. Run Bot
-```bash
-sbt run (sbt ~reStart)
-```
-
-### 4. View Telemetry
-- **Traces**: http://localhost:16686 (Jaeger)
-- **Metrics**: http://localhost:9090 (Prometheus)
-- **Dashboards**: http://localhost:3000 (Grafana - admin/admin)
-
-### 5. Test
-Send `@bot` message in Slack, then rapidly send more messages to trigger LLM interruption!
-
 ## Design Philosophy
 
 - **Selective Engagement** - Bot only acts on intentional @mentions, never thread noise
@@ -270,27 +232,6 @@ Send `@bot` message in Slack, then rapidly send more messages to trigger LLM int
 - **Crash Resilient** - Stateless recovery using Slack as source of truth
 
 Built for production-ready Slack bots that need reliable, maintainable conversation management.
-
-## Development
-
-### Commands
-- `sbt compile` - Compile the code
-- `sbt dev` - Run with hot-reload (recommended)
-- `sbt run` - Run the application
-- `sbt console` - Start a Scala 3 REPL
-
-### Observability
-- `./scripts/start-observability.sh` - Start OTel Collector stack (Podman)
-- `./scripts/start-jaeger.sh` - Quick Jaeger-only setup (Podman)
-- `podman-compose logs -f` - View all service logs
-
-### Documentation
-- [Architecture](docs/ARCHITECTURE.md) - **Complete system architecture** ⭐
-- [ZIO Telemetry Guide](docs/ZIO_TELEMETRY_GUIDE.md) - **Concise telemetry implementation guide** ⭐
-- [OpenTelemetry Setup](docs/OPENTELEMETRY_SETUP.md) - Quick observability reference
-- [OTel Collector Stack](docs/OTEL_COLLECTOR_STACK.md) - Full observability setup
-- [LLM Providers](docs/LLM_PROVIDERS.md) - Multi-provider LLM configuration
-- [Testing Guide](TESTING_GUIDE.md) - Testing strategies
 
 ## Architecture
 
